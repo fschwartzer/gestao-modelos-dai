@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Streamlit e segredos
+.streamlit/secrets.toml
+
+# Dados e artefatos reais
+*.dai
+*.sqlite3
+*.db
+data/private/
+catalogo_modelos.csv
+amostras_modelos.csv
+amostras_modelos.csv.gz
+erros_extracao.csv
+
+# Exceção: banco sintético versionado
+!data/demo/trabalhos_demo.sqlite3
+
+# IDE e sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Pacotes gerados
+*.zip
+
