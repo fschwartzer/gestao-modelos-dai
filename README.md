@@ -74,12 +74,25 @@ O modo inicial usa os arquivos de `data/demo`.
 
 1. Execute o aplicativo localmente.
 2. Na barra lateral, escolha **Enviar arquivos nesta sessão**.
-3. Envie o banco de trabalhos com extensão `.sqlite`, `.sqlite3` ou `.db`.
-4. Selecione um ou mais modelos `.DAI`.
-5. Confirme que os modelos são internos e confiáveis.
+3. Envie o banco de trabalhos com extensão `.sqlite`, `.sqlite3` ou `.db` e/ou selecione um ou
+   mais modelos `.DAI`.
+4. Se houver `.DAI`, confirme que os modelos são internos e confiáveis.
 
 Os arquivos não são incorporados ao repositório. O catálogo, o hash SHA-256 e as coordenadas da
 amostra são extraídos em memória. Falhas em um `.DAI` são registradas sem descartar os demais.
+
+As fontes são independentes e as páginas são habilitadas somente quando seus insumos existem:
+
+| Análise | SQLite | `.DAI`/catálogo | Amostra espacial |
+|---|:---:|:---:|:---:|
+| Visão geral dos trabalhos | Obrigatório | — | — |
+| Catálogo de modelos | — | Obrigatório | — |
+| Cobertura espacial | Obrigatório | — | Obrigatório |
+| Triagem integrada | Obrigatório | Obrigatório | Obrigatório |
+| Metodologia | — | — | — |
+
+Assim, é possível trabalhar somente com SQLite ou somente com `.DAI`; as análises incompatíveis
+ficam fora da navegação e a barra lateral informa quais fontes estão disponíveis.
 
 ### Arquivos locais protegidos
 
@@ -93,9 +106,9 @@ data/private/
     └── MODELO_2.dai
 ```
 
-A pasta está bloqueada pelo `.gitignore`. Quando o banco existe, a opção **Arquivos locais
-protegidos** aparece na barra lateral. Arquivos `.DAI` podem ficar diretamente em `data/private/`
-ou em `data/private/modelos/`.
+A pasta está bloqueada pelo `.gitignore`. A opção **Arquivos locais protegidos** aparece quando
+qualquer uma das fontes existe. Arquivos `.DAI` podem ficar diretamente em `data/private/` ou em
+`data/private/modelos/`; seu processamento é opcional e exige confirmação de origem confiável.
 
 ### Alternativa: extrair catálogos antes da sessão
 

@@ -6,6 +6,7 @@ import pandas as pd
 
 from src.config import DEMO_SAMPLES
 from src.data import (
+    analysis_availability,
     load_csv_source,
     load_demo_data,
     load_sqlite_bytes,
@@ -75,3 +76,37 @@ def test_uploaded_sample_coordinates_are_normalized() -> None:
     assert normalized.iloc[0]["latitude"] == -30.03
     assert normalized.iloc[0]["longitude"] == -51.20
     assert normalized.iloc[0]["status_coordenada"] == "invertida_corrigida"
+
+
+def test_analysis_availability_with_independent_sources() -> None:
+    empty = pd.DataFrame()
+    works = pd.DataFrame({"trabalho_id": ["T1"]})
+    catalog = pd.DataFrame({"modelo_nome": ["M1"]})
+    samples = pd.DataFrame(
+        {"modelo_nome": ["M1"], "latitude": [-30.03], "longitude": [-51.20]}
+    )
+
+    sqlite_only = analysis_availability(works, empty, empty)
+    assert sqlite_only == {
+        "Visão geral": True,
+        "Modelos": False,
+        "Cobertura": False,
+        "Prioridades": False,
+        "Metodologia": True,
+    }
+
+    dai_only = analysis_availability(empty, catalog, samples)
+    assert dai_only == {
+        "Visão geral": False,
+        "Modelos": True,
+        "Cobertura": False,
+        "Prioridades": False,
+        "Metodologia": True,
+    }
+
+    complete = analysis_availability(works, catalog, samples)
+    assert all(complete.values())
+
+    samples_and_sqlite = analysis_availability(works, empty, samples)
+    assert samples_and_sqlite["Cobertura"] is True
+    assert samples_and_sqlite["Prioridades"] is False

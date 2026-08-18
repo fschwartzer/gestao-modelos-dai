@@ -19,6 +19,7 @@ from src.charts import (
 from src.config import ALLOW_DAI_UPLOADS, PRIVATE_DIR
 from src.dai import extract_dai_path, extract_many_dai_bytes
 from src.data import (
+    analysis_availability,
     load_csv_source,
     load_demo_data,
     load_sqlite_bytes,
@@ -70,12 +71,12 @@ def cached_uploaded_dais(
 
 @st.cache_data(show_spinner=False)
 def cached_local_data(
-    db_path: str,
+    db_path: str | None,
     dai_paths: tuple[str, ...],
     catalog_path: str,
     samples_path: str,
 ):
-    works = load_sqlite_path(db_path)
+    works = load_sqlite_path(db_path) if db_path else pd.DataFrame()
     if not dai_paths:
         catalog = standardize_catalog(load_csv_source(catalog_path))
         samples = standardize_samples(load_csv_source(samples_path))
@@ -127,7 +128,12 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
             | set((PRIVATE_DIR / "modelos").glob("*.dai"))
         )
     )
-    local_available = local_db.exists()
+    local_available = (
+        local_db.exists()
+        or bool(local_dais)
+        or local_catalog.exists()
+        or local_samples.exists()
+    )
 
     options = ["Demonstração"]
     if local_available:
@@ -140,21 +146,33 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
         return works, catalog, samples, "Dados sintéticos de demonstração"
 
     if mode == "Arquivos locais protegidos":
-        if local_dais and not st.sidebar.checkbox(
-            "Confirmo que os .DAI locais são internos e confiáveis",
-            help="Arquivos joblib/pickle podem executar código durante a leitura.",
-        ):
-            st.warning("Confirme a origem dos arquivos `.DAI` na barra lateral para processá-los.")
-            st.stop()
+        selected_local_dais: tuple[str, ...] = ()
+        if local_dais and st.sidebar.checkbox("Processar arquivos .DAI locais"):
+            if not st.sidebar.checkbox(
+                "Confirmo que os .DAI locais são internos e confiáveis",
+                help="Arquivos joblib/pickle podem executar código durante a leitura.",
+            ):
+                st.warning(
+                    "Confirme a origem dos arquivos `.DAI` na barra lateral para processá-los."
+                )
+                st.stop()
+            selected_local_dais = local_dais
         works, catalog, samples, errors = cached_local_data(
-            str(local_db), local_dais, str(local_catalog), str(local_samples)
+            str(local_db) if local_db.exists() else None,
+            selected_local_dais,
+            str(local_catalog),
+            str(local_samples),
         )
         show_extraction_errors(errors)
         return (
             works,
             catalog,
             samples,
-            f"Arquivos locais protegidos · {len(catalog)} modelo(s) processado(s)",
+            (
+                "Arquivos locais protegidos · "
+                f"SQLite: {'sim' if not works.empty else 'não'} · "
+                f"modelos: {len(catalog)}"
+            ),
         )
 
     st.sidebar.caption("Os uploads são processados em memória durante a sessão ativa.")
@@ -173,10 +191,7 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
     )
     if not ALLOW_DAI_UPLOADS:
         st.sidebar.info("O envio direto de `.DAI` foi desativado nesta implantação.")
-    if db_file is None:
-        st.info("Envie o banco SQLite na barra lateral para iniciar a análise.")
-        st.stop()
-    works = cached_uploaded_sqlite(db_file.getvalue())
+    works = cached_uploaded_sqlite(db_file.getvalue()) if db_file else pd.DataFrame()
 
     if dai_files:
         trusted = st.sidebar.checkbox(
@@ -193,13 +208,19 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
         show_extraction_errors(errors)
         if catalog.empty:
             st.error("Nenhum arquivo `.DAI` pôde ser processado; consulte os erros de extração.")
-            st.stop()
-        return (
-            works,
-            catalog,
-            samples,
-            f"Uploads da sessão · {len(catalog)} modelo(s) processado(s)",
-        )
+            if works.empty:
+                st.stop()
+        else:
+            return (
+                works,
+                catalog,
+                samples,
+                (
+                    "Uploads da sessão · "
+                    f"SQLite: {'sim' if not works.empty else 'não'} · "
+                    f"modelos: {len(catalog)}"
+                ),
+            )
 
     with st.sidebar.expander("Alternativa: catálogos já extraídos"):
         catalog_file = st.file_uploader("Catálogo (.csv)", type=["csv"], key="catalog_csv")
@@ -208,7 +229,19 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
         )
     catalog = standardize_catalog(cached_uploaded_csv(catalog_file.getvalue())) if catalog_file else pd.DataFrame()
     samples = standardize_samples(cached_uploaded_csv(samples_file.getvalue())) if samples_file else pd.DataFrame()
-    return works, catalog, samples, "Banco SQLite enviado · nenhum .DAI processado"
+    if works.empty and catalog.empty:
+        st.info("Envie ao menos um banco SQLite, arquivo `.DAI` ou catálogo já extraído.")
+        st.stop()
+    return (
+        works,
+        catalog,
+        samples,
+        (
+            "Uploads da sessão · "
+            f"SQLite: {'sim' if not works.empty else 'não'} · "
+            f"modelos: {len(catalog)}"
+        ),
+    )
 
 
 def global_filters(works: pd.DataFrame) -> pd.DataFrame:
@@ -285,9 +318,14 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     catalog_view = add_temporal_governance(
         add_model_dimensions(catalog), today=date.today()
     )
-    usage = works.groupby("modelo_nome")["trabalho_id"].nunique().rename("usos_historicos")
-    catalog_view = catalog_view.merge(usage, on="modelo_nome", how="left")
-    catalog_view["usos_historicos"] = catalog_view["usos_historicos"].fillna(0).astype(int)
+    if works.empty:
+        st.info("SQLite não fornecido: o uso histórico dos modelos não será exibido.")
+    else:
+        usage = works.groupby("modelo_nome")["trabalho_id"].nunique().rename("usos_historicos")
+        catalog_view = catalog_view.merge(usage, on="modelo_nome", how="left")
+        catalog_view["usos_historicos"] = (
+            catalog_view["usos_historicos"].fillna(0).astype(int)
+        )
 
     families = sorted(catalog_view["familia"].dropna().unique())
     selected_family = st.selectbox("Família", ["Todas"] + families)
@@ -360,7 +398,7 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     st.json({key: (value.isoformat() if isinstance(value, pd.Timestamp) else value) for key, value in detail.items()})
 
 
-def page_coverage(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFrame) -> None:
+def page_coverage(works: pd.DataFrame, samples: pd.DataFrame) -> None:
     st.title("Cobertura e suporte espacial")
     if samples.empty:
         st.warning(
@@ -566,6 +604,7 @@ def page_methodology() -> None:
 ### O que o MVP faz
 
 - relaciona trabalhos técnicos e nomes históricos de modelos;
+- aceita SQLite e `.DAI` de forma independente, habilitando apenas análises compatíveis;
 - corrige coordenadas antigas invertidas durante a leitura;
 - apresenta demanda territorial e temporal;
 - recebe diretamente bancos SQLite e múltiplos arquivos `.DAI` confiáveis;
@@ -621,15 +660,31 @@ def main() -> None:
     except (OSError, ValueError) as error:
         st.error(f"Não foi possível carregar os arquivos: {error}")
         st.stop()
-    filtered_works = global_filters(works)
+    filtered_works = global_filters(works) if not works.empty else works
+    availability = analysis_availability(works, catalog, samples)
+    page_order = ["Visão geral", "Modelos", "Cobertura", "Prioridades", "Metodologia"]
+    available_pages = [page_name for page_name in page_order if availability[page_name]]
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Fontes disponíveis")
+    st.sidebar.caption(
+        f"{'✅' if not works.empty else '—'} SQLite · "
+        f"{'✅' if not catalog.empty else '—'} modelos `.DAI`/catálogo · "
+        f"{'✅' if not samples.empty else '—'} amostra espacial"
+    )
+    unavailable_pages = [page_name for page_name in page_order if not availability[page_name]]
+    if unavailable_pages:
+        st.sidebar.caption(
+            "Análises desabilitadas pelas fontes ausentes: " + ", ".join(unavailable_pages)
+        )
     st.sidebar.divider()
     page = st.sidebar.radio(
         "Navegação",
-        ["Visão geral", "Modelos", "Cobertura", "Prioridades", "Metodologia"],
+        available_pages,
     )
     st.sidebar.caption("MVP · Gestão de Modelos DAI")
 
-    if filtered_works.empty:
+    if filtered_works.empty and page in {"Visão geral", "Cobertura", "Prioridades"}:
         st.warning("Nenhum trabalho corresponde aos filtros selecionados.")
         return
     if page == "Visão geral":
@@ -637,7 +692,7 @@ def main() -> None:
     elif page == "Modelos":
         page_models(filtered_works, catalog)
     elif page == "Cobertura":
-        page_coverage(filtered_works, catalog, samples)
+        page_coverage(filtered_works, samples)
     elif page == "Prioridades":
         page_priority(filtered_works, catalog, samples)
     else:

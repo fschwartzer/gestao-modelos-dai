@@ -188,6 +188,25 @@ def load_demo_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return works, catalog, samples
 
 
+def analysis_availability(
+    works: pd.DataFrame,
+    catalog: pd.DataFrame,
+    samples: pd.DataFrame,
+) -> dict[str, bool]:
+    """Informa quais análises têm todas as fontes necessárias disponíveis."""
+
+    has_works = not works.empty
+    has_catalog = not catalog.empty
+    has_samples = not samples.empty
+    return {
+        "Visão geral": has_works,
+        "Modelos": has_catalog,
+        "Cobertura": has_works and has_samples,
+        "Prioridades": has_works and has_catalog and has_samples,
+        "Metodologia": True,
+    }
+
+
 def unique_work_points(works: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "trabalho_id",
