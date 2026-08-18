@@ -9,6 +9,9 @@ import pandas as pd
 from src.config import SCORE_WEIGHTS, TIPOLOGIA_LABELS
 
 
+HAVERSINE_MAX_PAIR_CELLS = 1_000_000
+
+
 def canonical_model_name(name: object) -> str:
     value = str(name or "").strip()
     value = re.sub(r"\.dai$", "", value, flags=re.IGNORECASE)
@@ -58,16 +61,28 @@ def haversine_nearest_km(
         return np.full(len(origins), np.nan)
     origin = origins[["latitude", "longitude"]].to_numpy(dtype=float)
     destination = destinations[["latitude", "longitude"]].to_numpy(dtype=float)
-    lat1 = np.radians(origin[:, 0])[:, None]
-    lon1 = np.radians(origin[:, 1])[:, None]
+    valid_origins = np.isfinite(origin).all(axis=1)
+    destination = destination[np.isfinite(destination).all(axis=1)]
+    result = np.full(len(origin), np.nan)
+    if not valid_origins.any() or not len(destination):
+        return result
+
+    valid_origin_positions = np.flatnonzero(valid_origins)
+    chunk_size = max(1, HAVERSINE_MAX_PAIR_CELLS // len(destination))
     lat2 = np.radians(destination[:, 0])[None, :]
     lon2 = np.radians(destination[:, 1])[None, :]
-    value = (
-        np.sin((lat2 - lat1) / 2) ** 2
-        + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
-    )
-    distance = 6371.0088 * 2 * np.arcsin(np.sqrt(np.clip(value, 0, 1)))
-    return np.nanmin(distance, axis=1)
+    for start in range(0, len(valid_origin_positions), chunk_size):
+        positions = valid_origin_positions[start : start + chunk_size]
+        current = origin[positions]
+        lat1 = np.radians(current[:, 0])[:, None]
+        lon1 = np.radians(current[:, 1])[:, None]
+        value = (
+            np.sin((lat2 - lat1) / 2) ** 2
+            + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
+        )
+        distance = 6371.0088 * 2 * np.arcsin(np.sqrt(np.clip(value, 0, 1)))
+        result[positions] = np.min(distance, axis=1)
+    return result
 
 
 def model_distance_summary(works: pd.DataFrame, samples: pd.DataFrame) -> pd.DataFrame:

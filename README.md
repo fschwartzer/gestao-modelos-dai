@@ -5,21 +5,23 @@ Aplicativo Streamlit para organizar modelos de avaliação imobiliária, visuali
 O projeto parte de duas fontes:
 
 1. banco SQLite com trabalhos, imóveis, coordenadas e modelos utilizados;
-2. catálogos seguros extraídos localmente dos arquivos `.dai`.
+2. um ou mais arquivos `.DAI` com os modelos e suas amostras espaciais.
 
-> O aplicativo web **não abre arquivos `.dai`**. Esses arquivos usam `joblib/pickle`, podem depender de versões específicas do ambiente Python e só devem ser carregados localmente quando sua origem for confiável.
+> Arquivos `.DAI` usam `joblib/pickle` e podem executar código durante a leitura. O aplicativo exige confirmação explícita antes de abri-los, mas isso não substitui uma sandbox. Use o envio direto somente com arquivos internos e confiáveis.
 
 ## Funcionalidades
 
 - mapa de densidade dos trabalhos técnicos;
 - gráficos de barras por modelo, família e ano;
 - catálogo com período da amostra, tamanho, outliers e R² ajustado;
-- mapa comparando trabalhos e pontos da amostra do modelo;
+- mapa multicamadas sobrepondo trabalhos e envoltórias empíricas dos modelos;
+- classificação dos trabalhos dentro/fora da envoltória convexa de cada amostra;
 - distância de cada trabalho ao dado de treinamento mais próximo;
 - correção automática de coordenadas históricas invertidas;
 - triagem de modelos por demanda, recência, suporte espacial e presença no catálogo;
 - modo de demonstração com dados totalmente sintéticos;
-- envio transitório do SQLite e dos CSVs pela interface.
+- envio transitório de múltiplos `.DAI` e um banco SQLite pela interface;
+- alternativa compatível com catálogos CSV pré-extraídos.
 
 ## Estrutura
 
@@ -33,8 +35,10 @@ O projeto parte de duas fontes:
 ├── src/
 │   ├── charts.py
 │   ├── config.py
+│   ├── dai.py
 │   ├── data.py
-│   └── metrics.py
+│   ├── metrics.py
+│   └── spatial.py
 ├── tests/
 ├── requirements.txt
 └── requirements-extractor.txt
@@ -66,17 +70,39 @@ streamlit run app.py
 
 O modo inicial usa os arquivos de `data/demo`.
 
-## Usar os dados reais sem publicá-los
+## Usar os dados reais em uma sessão local
 
-### 1. Preparar o extrator
+1. Execute o aplicativo localmente.
+2. Na barra lateral, escolha **Enviar arquivos nesta sessão**.
+3. Envie o banco de trabalhos com extensão `.sqlite`, `.sqlite3` ou `.db`.
+4. Selecione um ou mais modelos `.DAI`.
+5. Confirme que os modelos são internos e confiáveis.
+
+Os arquivos não são incorporados ao repositório. O catálogo, o hash SHA-256 e as coordenadas da
+amostra são extraídos em memória. Falhas em um `.DAI` são registradas sem descartar os demais.
+
+### Arquivos locais protegidos
+
+Também é possível manter os dados fora do Git em:
+
+```text
+data/private/
+├── trabalhos_tecnicos.sqlite3
+└── modelos/
+    ├── MODELO_1.dai
+    └── MODELO_2.dai
+```
+
+A pasta está bloqueada pelo `.gitignore`. Quando o banco existe, a opção **Arquivos locais
+protegidos** aparece na barra lateral. Arquivos `.DAI` podem ficar diretamente em `data/private/`
+ou em `data/private/modelos/`.
+
+### Alternativa: extrair catálogos antes da sessão
+
+Para uma implantação que não deve desserializar `.DAI`, execute o extrator em ambiente controlado:
 
 ```bash
 pip install -r requirements-extractor.txt
-```
-
-### 2. Extrair os `.dai` localmente
-
-```bash
 python scripts/extract_dai.py \
   --input-dir "CAMINHO/PARA/MODELOS" \
   --output-dir data/private \
@@ -92,18 +118,6 @@ Saídas:
 - `data/private/erros_extracao.csv`.
 
 Por padrão, o extrator não exporta nomes, matrículas, documentos, endereços nem valores individuais. Exporta somente metadados do modelo e coordenadas necessárias para o diagnóstico espacial.
-
-### 3. Copiar o banco
-
-Copie o banco para:
-
-```text
-data/private/trabalhos_tecnicos.sqlite3
-```
-
-Essa pasta está bloqueada pelo `.gitignore`. Quando os arquivos existem, a opção **Arquivos locais protegidos** aparece na barra lateral.
-
-Também é possível escolher **Enviar arquivos nesta sessão**, sem gravá-los no repositório.
 
 ## Publicar no GitHub
 
@@ -133,7 +147,24 @@ Não devem aparecer arquivos `.dai`, bancos reais nem `data/private`.
 5. informe `app.py` como arquivo principal;
 6. faça o deploy.
 
-Para uma aplicação pública, mantenha apenas o modo de demonstração. O envio de arquivos reais pela interface deve ser usado apenas em sessão controlada e consciente de que o endereço da aplicação é público.
+Para uma aplicação pública, mantenha apenas o modo de demonstração e defina a variável de ambiente
+`ALLOW_DAI_UPLOADS=false`. Isso remove o uploader `.DAI`; os CSVs pré-extraídos continuam disponíveis
+como alternativa. O envio de dados reais deve ocorrer apenas em implantação autenticada e controlada.
+
+## Alcance espacial no mapa
+
+- CRS das coordenadas: WGS84 (`EPSG:4326`);
+- unidade das distâncias: quilômetros, calculados por haversine;
+- regra de alcance: envoltória convexa dos pontos válidos da amostra de cada modelo;
+- mínimo: três pontos distintos e não colineares;
+- custo: contenção ponto-polígono por modelo e busca haversine `O(trabalhos × amostra)`;
+  a busca é executada em blocos de até um milhão de pares para limitar o uso de memória.
+
+A envoltória é um diagnóstico empírico: pode atravessar lacunas sem observações e não representa
+zona legal, vigência institucional ou ausência de extrapolação multivariada. A análise é
+pós-modelagem e não cria features, portanto não mistura treino e teste. COD, PRD, mediana das razões
+e regressividade ainda exigem valores observados e estimados em uma base de teste ou validação
+espacial/temporal identificada.
 
 ## Escore de triagem
 
@@ -151,6 +182,7 @@ O escore não declara que um modelo é inválido. Ele serve para localizar situa
 ## Limitações do MVP
 
 - distância espacial não mede extrapolação multivariada;
+- a envoltória convexa pode superestimar suporte em amostras descontínuas;
 - o nome histórico ainda não substitui um vínculo por hash/versionamento formal;
 - a diferença entre valor estimado e adotado não está disponível no banco atual;
 - cobertura autorizada e vigência precisam de cadastro institucional;

@@ -26,6 +26,18 @@ def test_haversine_zero_distance() -> None:
     assert np.isclose(distance[0], 0.0)
 
 
+def test_haversine_ignores_invalid_coordinates_without_losing_alignment() -> None:
+    origins = pd.DataFrame(
+        {"latitude": [-30.03, np.nan], "longitude": [-51.20, -51.20]}
+    )
+    destinations = pd.DataFrame(
+        {"latitude": [np.nan, -30.03], "longitude": [-51.20, -51.20]}
+    )
+    distance = haversine_nearest_km(origins, destinations)
+    assert np.isclose(distance[0], 0.0)
+    assert np.isnan(distance[1])
+
+
 def test_priority_table_is_bounded() -> None:
     works, catalog, samples = load_demo_data()
     table = build_priority_table(works, catalog, samples, today=date(2026, 8, 13))

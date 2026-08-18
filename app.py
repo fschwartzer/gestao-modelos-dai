@@ -16,7 +16,8 @@ from src.charts import (
     horizontal_bar,
     priority_map,
 )
-from src.config import PRIVATE_DIR
+from src.config import ALLOW_DAI_UPLOADS, PRIVATE_DIR
+from src.dai import extract_dai_path, extract_many_dai_bytes
 from src.data import (
     load_csv_source,
     load_demo_data,
@@ -32,6 +33,7 @@ from src.metrics import (
     distance_bins,
     haversine_nearest_km,
 )
+from src.spatial import SPATIAL_CRS, add_reach_status
 
 
 st.set_page_config(
@@ -58,17 +60,72 @@ def cached_uploaded_csv(raw: bytes) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def cached_local_data(db_path: str, catalog_path: str, samples_path: str):
+def cached_uploaded_dais(
+    sources: tuple[tuple[str, bytes], ...],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    catalog, samples, errors = extract_many_dai_bytes(sources, trust_source=True)
+    return standardize_catalog(catalog), standardize_samples(samples), errors
+
+
+@st.cache_data(show_spinner=False)
+def cached_local_data(
+    db_path: str,
+    dai_paths: tuple[str, ...],
+    catalog_path: str,
+    samples_path: str,
+):
     works = load_sqlite_path(db_path)
-    catalog = standardize_catalog(load_csv_source(catalog_path))
-    samples = standardize_samples(load_csv_source(samples_path))
-    return works, catalog, samples
+    if not dai_paths:
+        catalog = standardize_catalog(load_csv_source(catalog_path))
+        samples = standardize_samples(load_csv_source(samples_path))
+        return works, catalog, samples, pd.DataFrame(columns=["arquivo", "erro"])
+
+    catalog_records: list[dict[str, object]] = []
+    sample_records: list[dict[str, object]] = []
+    error_records: list[dict[str, str]] = []
+    seen_model_names: set[str] = set()
+    for dai_path in dai_paths:
+        try:
+            record, extracted_samples = extract_dai_path(dai_path, trust_source=True)
+            model_key = str(record["modelo_nome"]).casefold()
+            if model_key in seen_model_names:
+                raise ValueError(
+                    "Identificador de modelo duplicado no lote; mantenha somente uma versão."
+                )
+            seen_model_names.add(model_key)
+            catalog_records.append(record)
+            sample_records.extend(extracted_samples)
+        except Exception as error:
+            error_records.append(
+                {"arquivo": Path(dai_path).name, "erro": f"{type(error).__name__}: {error}"}
+            )
+    return (
+        works,
+        standardize_catalog(pd.DataFrame(catalog_records)),
+        standardize_samples(pd.DataFrame(sample_records)),
+        pd.DataFrame(error_records, columns=["arquivo", "erro"]),
+    )
+
+
+def show_extraction_errors(errors: pd.DataFrame) -> None:
+    if errors.empty:
+        return
+    st.sidebar.warning(f"{len(errors)} arquivo(s) .DAI não puderam ser lidos.")
+    with st.sidebar.expander("Ver erros de extração"):
+        st.dataframe(errors, hide_index=True, width="stretch")
 
 
 def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     local_db = PRIVATE_DIR / "trabalhos_tecnicos.sqlite3"
     local_catalog = PRIVATE_DIR / "catalogo_modelos.csv"
     local_samples = PRIVATE_DIR / "amostras_modelos.csv.gz"
+    local_dais = tuple(
+        str(path)
+        for path in sorted(
+            set(PRIVATE_DIR.glob("*.dai"))
+            | set((PRIVATE_DIR / "modelos").glob("*.dai"))
+        )
+    )
     local_available = local_db.exists()
 
     options = ["Demonstração"]
@@ -82,32 +139,75 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
         return works, catalog, samples, "Dados sintéticos de demonstração"
 
     if mode == "Arquivos locais protegidos":
-        works, catalog, samples = cached_local_data(
-            str(local_db), str(local_catalog), str(local_samples)
+        if local_dais and not st.sidebar.checkbox(
+            "Confirmo que os .DAI locais são internos e confiáveis",
+            help="Arquivos joblib/pickle podem executar código durante a leitura.",
+        ):
+            st.warning("Confirme a origem dos arquivos `.DAI` na barra lateral para processá-los.")
+            st.stop()
+        works, catalog, samples, errors = cached_local_data(
+            str(local_db), local_dais, str(local_catalog), str(local_samples)
         )
-        return works, catalog, samples, "Arquivos locais protegidos"
+        show_extraction_errors(errors)
+        return (
+            works,
+            catalog,
+            samples,
+            f"Arquivos locais protegidos · {len(catalog)} modelo(s) processado(s)",
+        )
 
-    st.sidebar.caption("Os arquivos enviados são processados apenas durante a sessão ativa.")
-    db_file = st.sidebar.file_uploader("Banco de trabalhos (.sqlite3)", type=["sqlite3", "db"])
-    catalog_file = st.sidebar.file_uploader("Catálogo dos modelos (.csv)", type=["csv"])
-    samples_file = st.sidebar.file_uploader(
-        "Amostras espaciais (.csv ou .csv.gz)", type=["csv", "gz"]
+    st.sidebar.caption("Os uploads são processados em memória durante a sessão ativa.")
+    db_file = st.sidebar.file_uploader(
+        "Trabalhos técnicos (SQLite)", type=["sqlite", "sqlite3", "db"]
     )
+    dai_files = (
+        st.sidebar.file_uploader(
+            "Modelos (.DAI)",
+            type=["dai"],
+            accept_multiple_files=True,
+            help="Selecione um ou vários modelos. A amostra espacial será extraída do próprio pacote.",
+        )
+        if ALLOW_DAI_UPLOADS
+        else []
+    )
+    if not ALLOW_DAI_UPLOADS:
+        st.sidebar.info("O envio direto de `.DAI` foi desativado nesta implantação.")
     if db_file is None:
         st.info("Envie o banco SQLite na barra lateral para iniciar a análise.")
         st.stop()
     works = cached_uploaded_sqlite(db_file.getvalue())
-    catalog = (
-        standardize_catalog(cached_uploaded_csv(catalog_file.getvalue()))
-        if catalog_file is not None
-        else pd.DataFrame()
-    )
-    samples = (
-        standardize_samples(cached_uploaded_csv(samples_file.getvalue()))
-        if samples_file is not None
-        else pd.DataFrame()
-    )
-    return works, catalog, samples, "Arquivos enviados na sessão"
+
+    if dai_files:
+        trusted = st.sidebar.checkbox(
+            "Confirmo que os .DAI são internos e confiáveis",
+            help="A confirmação é obrigatória porque joblib/pickle pode executar código.",
+        )
+        if not trusted:
+            st.warning(
+                "Os arquivos `.DAI` ainda não foram abertos. Confirme a origem na barra lateral."
+            )
+            st.stop()
+        sources = tuple((uploaded.name, uploaded.getvalue()) for uploaded in dai_files)
+        catalog, samples, errors = cached_uploaded_dais(sources)
+        show_extraction_errors(errors)
+        if catalog.empty:
+            st.error("Nenhum arquivo `.DAI` pôde ser processado; consulte os erros de extração.")
+            st.stop()
+        return (
+            works,
+            catalog,
+            samples,
+            f"Uploads da sessão · {len(catalog)} modelo(s) processado(s)",
+        )
+
+    with st.sidebar.expander("Alternativa: catálogos já extraídos"):
+        catalog_file = st.file_uploader("Catálogo (.csv)", type=["csv"], key="catalog_csv")
+        samples_file = st.file_uploader(
+            "Amostras (.csv ou .csv.gz)", type=["csv", "gz"], key="samples_csv"
+        )
+    catalog = standardize_catalog(cached_uploaded_csv(catalog_file.getvalue())) if catalog_file else pd.DataFrame()
+    samples = standardize_samples(cached_uploaded_csv(samples_file.getvalue())) if samples_file else pd.DataFrame()
+    return works, catalog, samples, "Banco SQLite enviado · nenhum .DAI processado"
 
 
 def global_filters(works: pd.DataFrame) -> pd.DataFrame:
@@ -179,7 +279,7 @@ def page_overview(works: pd.DataFrame, source_label: str) -> None:
 def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     st.title("Catálogo de modelos")
     if catalog.empty:
-        st.warning("Envie o catálogo extraído dos `.dai` para consultar métricas e períodos.")
+        st.warning("Envie arquivos `.DAI` confiáveis para consultar métricas e períodos.")
         return
     catalog_view = add_model_dimensions(catalog)
     usage = works.groupby("modelo_nome")["trabalho_id"].nunique().rename("usos_historicos")
@@ -246,33 +346,56 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
 def page_coverage(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFrame) -> None:
     st.title("Cobertura e suporte espacial")
     if samples.empty:
-        st.warning("Envie o arquivo de amostras espaciais para calcular suporte e distâncias.")
+        st.warning(
+            "Os modelos processados não forneceram coordenadas `lat/lon` válidas para o mapa."
+        )
         return
     candidates = sorted(set(works["modelo_nome"]) & set(samples["modelo_nome"]))
     if not candidates:
         st.warning("Nenhum nome de modelo coincide entre os trabalhos e as amostras.")
         return
-    selected = st.selectbox("Modelo", candidates)
+    selected_models = st.multiselect(
+        "Modelos sobrepostos",
+        candidates,
+        default=[candidates[0]],
+        help="Os trabalhos exibidos são aqueles vinculados aos modelos selecionados.",
+    )
+    if not selected_models:
+        st.info("Selecione ao menos um modelo para montar a sobreposição.")
+        return
+    show_samples = st.toggle("Exibir pontos da amostra", value=False)
     work_points = (
-        works[works["modelo_nome"] == selected]
+        works[works["modelo_nome"].isin(selected_models)]
         .dropna(subset=["latitude", "longitude"])
-        .drop_duplicates(subset=["trabalho_id", "imovel_id"])
+        .drop_duplicates(subset=["trabalho_id", "imovel_id", "modelo_nome"])
         .copy()
     )
-    sample_points = samples[samples["modelo_nome"] == selected].copy()
-    work_points["distancia_km"] = haversine_nearest_km(work_points, sample_points)
+    sample_points = samples[samples["modelo_nome"].isin(selected_models)].copy()
+    work_points["distancia_km"] = np.nan
+    for model_name, indices in work_points.groupby("modelo_nome").groups.items():
+        model_samples = sample_points[sample_points["modelo_nome"] == model_name]
+        work_points.loc[indices, "distancia_km"] = haversine_nearest_km(
+            work_points.loc[indices], model_samples
+        )
+    work_points = add_reach_status(work_points, sample_points)
 
     finite = work_points["distancia_km"].dropna()
-    metrics = st.columns(4)
+    classified = work_points["dentro_alcance"].dropna()
+    inside_share = float(classified.mean() * 100) if not classified.empty else np.nan
+    metrics = st.columns(5)
     metrics[0].metric("Dados da amostra", len(sample_points))
     metrics[1].metric("Trabalhos", work_points["trabalho_id"].nunique())
     metrics[2].metric("Distância mediana", "—" if finite.empty else f"{finite.median():.2f} km")
     metrics[3].metric("Distância P90", "—" if finite.empty else f"{finite.quantile(.90):.2f} km")
+    metrics[4].metric(
+        "Pares dentro da envoltória",
+        "—" if np.isnan(inside_share) else f"{inside_share:.1f}%",
+    )
 
     left, right = st.columns([1.7, 1], gap="large")
     with left:
         st.plotly_chart(
-            coverage_map(work_points, sample_points),
+            coverage_map(work_points, sample_points, show_samples=show_samples),
             width="stretch",
             config=PLOTLY_CONFIG,
         )
@@ -288,13 +411,46 @@ def page_coverage(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
             "As faixas das variáveis explicativas também precisam ser verificadas."
         )
 
-    if not catalog.empty and selected in set(catalog["modelo_nome"]):
-        record = catalog[catalog["modelo_nome"] == selected].iloc[0]
-        st.info(
-            f"Período da amostra: {record.get('data_inicial', '—')} a "
-            f"{record.get('data_final', '—')} · R² ajustado: "
-            f"{record.get('r2_ajustado', '—')}"
+    st.caption(
+        f"CRS: {SPATIAL_CRS}. O alcance desenhado é a envoltória convexa dos pontos da amostra; "
+        "pode cobrir lacunas sem observações e não representa limite legal, zona autorizada ou "
+        "ausência de extrapolação multivariada."
+    )
+
+    summary_records: list[dict[str, object]] = []
+    for model_name in selected_models:
+        model_works = work_points[work_points["modelo_nome"] == model_name]
+        model_samples = sample_points[sample_points["modelo_nome"] == model_name]
+        model_classified = model_works["dentro_alcance"].dropna()
+        model_distances = model_works["distancia_km"].dropna()
+        summary_records.append(
+            {
+                "modelo_nome": model_name,
+                "pontos_amostra": len(model_samples),
+                "trabalhos": model_works["trabalho_id"].nunique(),
+                "dentro_envoltoria_pct": (
+                    float(model_classified.mean() * 100) if not model_classified.empty else np.nan
+                ),
+                "dist_p90_km": (
+                    float(model_distances.quantile(0.90)) if not model_distances.empty else np.nan
+                ),
+            }
         )
+    st.subheader("Resumo por modelo")
+    st.dataframe(
+        pd.DataFrame(summary_records),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "modelo_nome": "Modelo",
+            "pontos_amostra": "Pontos da amostra",
+            "trabalhos": "Trabalhos",
+            "dentro_envoltoria_pct": st.column_config.NumberColumn(
+                "Dentro da envoltória", format="%.1f%%"
+            ),
+            "dist_p90_km": st.column_config.NumberColumn("Distância P90", format="%.2f km"),
+        },
+    )
 
 
 def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFrame) -> None:
@@ -379,31 +535,48 @@ def page_methodology() -> None:
 - relaciona trabalhos técnicos e nomes históricos de modelos;
 - corrige coordenadas antigas invertidas durante a leitura;
 - apresenta demanda territorial e temporal;
-- compara trabalhos com a amostra espacial extraída dos modelos;
+- recebe diretamente bancos SQLite e múltiplos arquivos `.DAI` confiáveis;
+- sobrepõe trabalhos à envoltória convexa da amostra espacial de cada modelo;
 - cria uma triagem transparente para atualização e auditoria.
 
 ### O que o MVP ainda não conclui
 
 - distância espacial não substitui análise de extrapolação multivariada;
+- a envoltória convexa pode preencher lacunas sem dados e não equivale à área autorizada do modelo;
 - R² não determina sozinho a qualidade ou a validade do modelo;
+- o aplicativo não calcula COD, PRD, mediana das razões ou regressividade sem valores observados
+  e estimados em uma base de teste identificada;
 - o escore de triagem não substitui decisão técnica;
 - diferenças entre estimativa e valor adotado só poderão ser avaliadas quando esses campos forem registrados.
 
 ### Segurança dos dados
 
-Arquivos `.dai` são pacotes `joblib/pickle` e somente devem ser abertos quando sua origem é
-confiável. Eles não são carregados pelo aplicativo web. O extrator deve ser executado localmente,
-em ambiente controlado, produzindo catálogos CSV sem os registros pessoais da amostra.
+Arquivos `.DAI` são pacotes `joblib/pickle` e podem executar código ao serem abertos. A aplicação
+exige confirmação explícita de origem confiável antes da desserialização, mas essa confirmação não
+é uma sandbox. Em implantação pública, prefira desativar o envio direto e usar os CSVs produzidos
+pelo extrator local em ambiente controlado.
 
 O banco real, os `.dai` e os catálogos derivados estão bloqueados no `.gitignore`. Para uma
 demonstração pública, mantenha somente os dados sintéticos. Para uma sessão de análise, os arquivos
-podem ser enviados pela barra lateral sem serem incorporados ao repositório.
+podem ser enviados pela barra lateral sem serem incorporados ao repositório. As geometrias usam
+WGS84 (EPSG:4326); as distâncias são calculadas por haversine e apresentadas em quilômetros.
+
+### Interpretação analítica
+
+A sobreposição é um diagnóstico pós-modelagem. Ela não altera treino, validação ou predição e não
+gera vazamento entre amostra e trabalhos. Ainda assim, proximidade espacial não demonstra ausência
+de viés, overfitting ou regressividade: esses riscos devem ser verificados em base de teste ou
+validação espacial/temporal identificada, com COD, PRD e razões por estrato de valor.
 """
     )
 
 
 def main() -> None:
-    works, catalog, samples, source_label = load_selected_data()
+    try:
+        works, catalog, samples, source_label = load_selected_data()
+    except (OSError, ValueError) as error:
+        st.error(f"Não foi possível carregar os arquivos: {error}")
+        st.stop()
     filtered_works = global_filters(works)
     st.sidebar.divider()
     page = st.sidebar.radio(

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEMO_DIR = ROOT_DIR / "data" / "demo"
 PRIVATE_DIR = ROOT_DIR / "data" / "private"
+
+# Em implantação pública, defina ALLOW_DAI_UPLOADS=false e use catálogos pré-extraídos.
+ALLOW_DAI_UPLOADS = os.getenv("ALLOW_DAI_UPLOADS", "true").strip().casefold() in {
+    "1",
+    "true",
+    "sim",
+    "yes",
+}
 
 DEMO_DB = DEMO_DIR / "trabalhos_demo.sqlite3"
 DEMO_CATALOG = DEMO_DIR / "catalogo_modelos_demo.csv"

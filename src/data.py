@@ -74,6 +74,11 @@ def normalize_coordinate_pair(coord_x: object, coord_y: object) -> tuple[float, 
 
 def normalize_coordinates(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
+    if result.empty:
+        result["latitude"] = pd.Series(dtype=float)
+        result["longitude"] = pd.Series(dtype=float)
+        result["status_coordenada"] = pd.Series(dtype=str)
+        return result
     normalized = result.apply(
         lambda row: normalize_coordinate_pair(row.get("coord_x"), row.get("coord_y")),
         axis=1,
@@ -103,16 +108,19 @@ def load_sqlite_path(path: str | Path) -> pd.DataFrame:
     connection = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
     try:
         connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA trusted_schema=OFF")
         return _read_sqlite_connection(connection)
     finally:
         connection.close()
 
 
 def load_sqlite_bytes(raw: bytes) -> pd.DataFrame:
-    with tempfile.NamedTemporaryFile(suffix=".sqlite3") as temporary:
-        temporary.write(raw)
-        temporary.flush()
-        return load_sqlite_path(temporary.name)
+    if not raw.startswith(b"SQLite format 3\x00"):
+        raise ValueError("O arquivo enviado não possui um cabeçalho SQLite válido.")
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory) / "trabalhos.sqlite3"
+        temporary_path.write_bytes(raw)
+        return load_sqlite_path(temporary_path)
 
 
 def load_csv_source(source: str | Path | bytes | BinaryIO | None) -> pd.DataFrame:
@@ -154,9 +162,23 @@ def standardize_samples(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     result["latitude"] = pd.to_numeric(result["latitude"], errors="coerce")
     result["longitude"] = pd.to_numeric(result["longitude"], errors="coerce")
+    normalized = result.apply(
+        lambda row: normalize_coordinate_pair(row.get("longitude"), row.get("latitude")),
+        axis=1,
+        result_type="expand",
+    )
+    normalized.columns = ["latitude_normalizada", "longitude_normalizada", "status_coordenada"]
+    result["latitude"] = normalized["latitude_normalizada"]
+    result["longitude"] = normalized["longitude_normalizada"]
+    result["status_coordenada"] = normalized["status_coordenada"]
     if "data_ref" in result.columns:
         result["data_ref"] = pd.to_datetime(result["data_ref"], errors="coerce")
-    return result.dropna(subset=["latitude", "longitude"])
+    valid = result.dropna(subset=["latitude", "longitude"])
+    if valid.empty and not result.empty:
+        raise ValueError(
+            "Nenhuma coordenada da amostra está nos limites esperados de Porto Alegre (EPSG:4326)."
+        )
+    return valid
 
 
 def load_demo_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

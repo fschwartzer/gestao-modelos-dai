@@ -4,12 +4,25 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
+from src.spatial import empirical_reach_polygon
+
 
 PLOTLY_CONFIG = {
     "displaylogo": False,
     "scrollZoom": True,
     "modeBarButtonsToRemove": ["lasso2d", "select2d"],
 }
+
+MODEL_COLORS = [
+    "#2563eb",
+    "#7c3aed",
+    "#0891b2",
+    "#c2410c",
+    "#4d7c0f",
+    "#be185d",
+    "#0f766e",
+    "#a16207",
+]
 
 
 def _center(frame: pd.DataFrame) -> dict[str, float]:
@@ -45,37 +58,79 @@ def demand_map(points: pd.DataFrame) -> go.Figure:
     return figure
 
 
-def coverage_map(work_points: pd.DataFrame, sample_points: pd.DataFrame) -> go.Figure:
+def _transparent(hex_color: str, alpha: float) -> str:
+    value = hex_color.lstrip("#")
+    red, green, blue = (int(value[index : index + 2], 16) for index in (0, 2, 4))
+    return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
+def coverage_map(
+    work_points: pd.DataFrame,
+    sample_points: pd.DataFrame,
+    *,
+    show_samples: bool = False,
+) -> go.Figure:
     figure = go.Figure()
     center_source = pd.concat([work_points, sample_points], ignore_index=True)
     center = _center(center_source)
-    if not sample_points.empty:
-        figure.add_trace(
-            go.Scattermap(
-                lat=sample_points["latitude"],
-                lon=sample_points["longitude"],
-                mode="markers",
-                name="Amostra do modelo",
-                marker={"size": 8, "color": "#2563eb", "opacity": 0.55},
-                hovertemplate="Dado de treinamento<extra></extra>",
+
+    palette = MODEL_COLORS
+    for sequence, (model_name, model_samples) in enumerate(
+        sample_points.groupby("modelo_nome", sort=True)
+    ):
+        color = palette[sequence % len(palette)]
+        polygon = empirical_reach_polygon(model_samples)
+        if polygon is not None:
+            longitude, latitude = polygon.exterior.xy
+            figure.add_trace(
+                go.Scattermap(
+                    lat=list(latitude),
+                    lon=list(longitude),
+                    mode="lines",
+                    fill="toself",
+                    fillcolor=_transparent(color, 0.16),
+                    line={"color": color, "width": 2},
+                    name=f"Envoltória · {model_name}",
+                    hovertemplate=f"<b>{model_name}</b><br>Envoltória convexa da amostra<extra></extra>",
+                )
             )
-        )
+        if show_samples:
+            figure.add_trace(
+                go.Scattermap(
+                    lat=model_samples["latitude"],
+                    lon=model_samples["longitude"],
+                    mode="markers",
+                    name=f"Amostra · {model_name}",
+                    marker={"size": 6, "color": color, "opacity": 0.45},
+                    hovertemplate=f"Dado da amostra<br>{model_name}<extra></extra>",
+                )
+            )
     if not work_points.empty:
-        custom = work_points[["nome", "ano", "distancia_km"]].to_numpy()
-        figure.add_trace(
-            go.Scattermap(
-                lat=work_points["latitude"],
-                lon=work_points["longitude"],
-                mode="markers",
-                name="Trabalho técnico",
-                marker={"size": 12, "color": "#dc2626", "opacity": 0.9, "symbol": "diamond"},
-                customdata=custom,
-                hovertemplate=(
-                    "<b>%{customdata[0]}</b><br>Ano: %{customdata[1]}"
-                    "<br>Distância: %{customdata[2]:.2f} km<extra></extra>"
-                ),
+        styles = {
+            "Dentro da envoltória": ("#15803d", "circle"),
+            "Fora da envoltória": ("#dc2626", "diamond"),
+            "indeterminado": ("#64748b", "circle"),
+        }
+        for status, (color, symbol) in styles.items():
+            subset = work_points[work_points["status_alcance"] == status]
+            if subset.empty:
+                continue
+            custom = subset[["nome", "ano", "modelo_nome", "distancia_km"]].to_numpy()
+            figure.add_trace(
+                go.Scattermap(
+                    lat=subset["latitude"],
+                    lon=subset["longitude"],
+                    mode="markers",
+                    name=status,
+                    marker={"size": 11, "color": color, "opacity": 0.9, "symbol": symbol},
+                    customdata=custom,
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b><br>Ano: %{customdata[1]}"
+                        "<br>Modelo: %{customdata[2]}"
+                        "<br>Distância à amostra: %{customdata[3]:.2f} km<extra></extra>"
+                    ),
+                )
             )
-        )
     figure.update_layout(
         map={"style": "carto-positron", "center": center, "zoom": 10},
         margin=dict(l=0, r=0, t=0, b=0),

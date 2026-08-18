@@ -5,7 +5,14 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import DEMO_SAMPLES
-from src.data import load_csv_source, load_demo_data, normalize_coordinate_pair, unique_work_points
+from src.data import (
+    load_csv_source,
+    load_demo_data,
+    load_sqlite_bytes,
+    normalize_coordinate_pair,
+    standardize_samples,
+    unique_work_points,
+)
 
 
 def test_normalize_original_coordinates() -> None:
@@ -37,3 +44,34 @@ def test_gzip_csv_can_be_loaded_from_uploaded_bytes() -> None:
     frame = load_csv_source(Path(DEMO_SAMPLES).read_bytes())
     assert not frame.empty
     assert {"modelo_nome", "latitude", "longitude"}.issubset(frame.columns)
+
+
+def test_invalid_sqlite_upload_is_rejected_before_opening() -> None:
+    try:
+        load_sqlite_bytes(b"arquivo-invalido")
+    except ValueError as error:
+        assert "cabeçalho SQLite" in str(error)
+    else:
+        raise AssertionError("Um arquivo sem cabeçalho SQLite foi aceito.")
+
+
+def test_demo_sqlite_can_be_loaded_from_uploaded_bytes() -> None:
+    from src.config import DEMO_DB
+
+    frame = load_sqlite_bytes(Path(DEMO_DB).read_bytes())
+    assert not frame.empty
+    assert frame["trabalho_id"].nunique() == 650
+
+
+def test_uploaded_sample_coordinates_are_normalized() -> None:
+    frame = pd.DataFrame(
+        {
+            "modelo_nome": ["MODELO_A"],
+            "latitude": [-51.20],
+            "longitude": [-30.03],
+        }
+    )
+    normalized = standardize_samples(frame)
+    assert normalized.iloc[0]["latitude"] == -30.03
+    assert normalized.iloc[0]["longitude"] == -51.20
+    assert normalized.iloc[0]["status_coordenada"] == "invertida_corrigida"
