@@ -10,6 +10,9 @@ from src.config import SCORE_WEIGHTS, TIPOLOGIA_LABELS
 
 
 HAVERSINE_MAX_PAIR_CELLS = 1_000_000
+MODEL_REVISION_PATTERN = re.compile(
+    r"^(?P<lineage>.+?_\d+)(?P<revision>[A-Z])?$", re.IGNORECASE
+)
 
 
 def canonical_model_name(name: object) -> str:
@@ -17,6 +20,129 @@ def canonical_model_name(name: object) -> str:
     value = re.sub(r"\.dai$", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\(\d+\)$", "", value)
     return value
+
+
+def parse_model_revision(name: object) -> dict[str, object]:
+    """Separa a linhagem do modelo e ordena seu sufixo alfabético de revisão."""
+
+    canonical = canonical_model_name(name)
+    match = MODEL_REVISION_PATTERN.fullmatch(canonical)
+    if not match:
+        return {
+            "modelo_nome_canonico": canonical,
+            "modelo_linhagem": canonical.upper(),
+            "revisao_modelo": "",
+            "ordem_revisao": 0,
+        }
+
+    revision = (match.group("revision") or "").upper()
+    revision_order = 0
+    for character in revision:
+        revision_order = revision_order * 26 + (ord(character) - ord("A") + 1)
+    return {
+        "modelo_nome_canonico": canonical,
+        "modelo_linhagem": match.group("lineage").upper(),
+        "revisao_modelo": revision,
+        "ordem_revisao": revision_order,
+    }
+
+
+def consolidate_latest_model_revisions(
+    works: pd.DataFrame,
+    catalog: pd.DataFrame,
+    samples: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Mantém a revisão mais recente e agrega usos históricos na mesma linhagem.
+
+    A revisão vencedora é definida pela união dos nomes presentes nas três fontes.
+    Trabalhos são remapeados para a vencedora; catálogo e amostra antigos são
+    descartados para não combinar metadados ou suporte espacial de versões distintas.
+    """
+
+    names: list[str] = []
+    for frame in (works, catalog, samples):
+        if not frame.empty and "modelo_nome" in frame:
+            names.extend(frame["modelo_nome"].dropna().astype(str).tolist())
+
+    audit_columns = [
+        "modelo_linhagem",
+        "modelo_mais_recente",
+        "revisao_mais_recente",
+        "versoes_encontradas",
+        "n_versoes",
+    ]
+    if not names:
+        return works.copy(), catalog.copy(), samples.copy(), pd.DataFrame(columns=audit_columns)
+
+    revisions = pd.DataFrame([parse_model_revision(name) for name in names]).drop_duplicates(
+        subset=["modelo_nome_canonico"]
+    )
+    revisions = revisions.sort_values(
+        ["modelo_linhagem", "ordem_revisao", "modelo_nome_canonico"]
+    )
+    winners = revisions.groupby("modelo_linhagem", as_index=False).tail(1)
+    winner_by_lineage = winners.set_index("modelo_linhagem")[
+        "modelo_nome_canonico"
+    ].to_dict()
+
+    audit_records: list[dict[str, object]] = []
+    for lineage, group in revisions.groupby("modelo_linhagem", sort=True):
+        ordered_versions = group["modelo_nome_canonico"].tolist()
+        winner = group.iloc[-1]
+        audit_records.append(
+            {
+                "modelo_linhagem": lineage,
+                "modelo_mais_recente": winner["modelo_nome_canonico"],
+                "revisao_mais_recente": winner["revisao_modelo"] or "base",
+                "versoes_encontradas": ", ".join(ordered_versions),
+                "n_versoes": len(ordered_versions),
+            }
+        )
+
+    def winner_for(name: object) -> str:
+        parsed = parse_model_revision(name)
+        return str(winner_by_lineage[parsed["modelo_linhagem"]])
+
+    consolidated_works = works.copy()
+    if not consolidated_works.empty and "modelo_nome" in consolidated_works:
+        consolidated_works["modelo_nome_original"] = consolidated_works["modelo_nome"]
+        consolidated_works["modelo_nome"] = consolidated_works["modelo_nome"].map(winner_for)
+        duplicate_keys = [
+            column
+            for column in ("trabalho_id", "imovel_id", "modelo_nome")
+            if column in consolidated_works
+        ]
+        if duplicate_keys:
+            consolidated_works = consolidated_works.drop_duplicates(subset=duplicate_keys)
+
+    def keep_latest(frame: pd.DataFrame, *, add_revision_columns: bool = False) -> pd.DataFrame:
+        if frame.empty or "modelo_nome" not in frame:
+            return frame.copy()
+        result = frame.copy()
+        parsed = pd.DataFrame(
+            result["modelo_nome"].map(parse_model_revision).tolist(), index=result.index
+        )
+        is_latest = [
+            canonical_model_name(name).casefold() == winner_for(name).casefold()
+            for name in result["modelo_nome"]
+        ]
+        result = result.loc[is_latest].copy()
+        result["modelo_nome"] = result["modelo_nome"].map(canonical_model_name)
+        if add_revision_columns and not result.empty:
+            result["modelo_linhagem"] = parsed.loc[result.index, "modelo_linhagem"]
+            result["revisao_modelo"] = parsed.loc[result.index, "revisao_modelo"].replace(
+                "", "base"
+            )
+        return result
+
+    consolidated_catalog = keep_latest(catalog, add_revision_columns=True)
+    consolidated_samples = keep_latest(samples)
+    return (
+        consolidated_works.reset_index(drop=True),
+        consolidated_catalog.reset_index(drop=True),
+        consolidated_samples.reset_index(drop=True),
+        pd.DataFrame(audit_records, columns=audit_columns),
+    )
 
 
 def parse_model_dimensions(name: object) -> dict[str, str]:
@@ -172,6 +298,9 @@ def build_priority_table(
 
     if works.empty:
         return pd.DataFrame()
+    works, catalog, samples, _ = consolidate_latest_model_revisions(
+        works, catalog, samples
+    )
     reference_date = today or date.today()
     max_year = int(pd.to_numeric(works["ano"], errors="coerce").max())
     recent = works[pd.to_numeric(works["ano"], errors="coerce") >= max_year - 1]

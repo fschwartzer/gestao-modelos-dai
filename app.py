@@ -32,6 +32,7 @@ from src.metrics import (
     add_model_dimensions,
     add_temporal_governance,
     build_priority_table,
+    consolidate_latest_model_revisions,
     distance_bins,
     haversine_nearest_km,
 )
@@ -315,6 +316,9 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     if catalog.empty:
         st.warning("Envie arquivos `.DAI` confiáveis para consultar métricas e períodos.")
         return
+    st.caption(
+        "O catálogo exibe somente a revisão alfabética mais recente de cada linhagem."
+    )
     catalog_view = add_temporal_governance(
         add_model_dimensions(catalog), today=date.today()
     )
@@ -333,6 +337,7 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
 
     display_columns = [
         "modelo_nome",
+        "revisao_modelo",
         "familia",
         "zonas_nome",
         "data_inicial",
@@ -351,6 +356,7 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
         hide_index=True,
         column_config={
             "modelo_nome": "Modelo",
+            "revisao_modelo": "Revisão",
             "familia": "Família",
             "zonas_nome": "Zonas",
             "data_inicial": st.column_config.DateColumn("Início dos dados"),
@@ -398,25 +404,47 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     st.json({key: (value.isoformat() if isinstance(value, pd.Timestamp) else value) for key, value in detail.items()})
 
 
-def page_coverage(works: pd.DataFrame, samples: pd.DataFrame) -> None:
+def page_coverage(
+    works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFrame
+) -> None:
     st.title("Cobertura e suporte espacial")
+    st.caption(
+        "Somente a revisão mais recente de cada linhagem é considerada; modelos vigentes "
+        "e em alerta são selecionados por padrão."
+    )
     if samples.empty:
         st.warning(
             "Os modelos processados não forneceram coordenadas `lat/lon` válidas para o mapa."
         )
         return
-    candidates = sorted(set(works["modelo_nome"]) & set(samples["modelo_nome"]))
+    candidates = sorted(set(catalog["modelo_nome"]) & set(samples["modelo_nome"]))
     if not candidates:
-        st.warning("Nenhum nome de modelo coincide entre os trabalhos e as amostras.")
+        st.warning("Nenhum nome de modelo coincide entre o catálogo e as amostras.")
         return
+    governed_catalog = add_temporal_governance(catalog, today=date.today())
+    default_models = sorted(
+        set(
+            governed_catalog.loc[
+                governed_catalog["status_temporal"].isin(["Vigente", "Alerta"]),
+                "modelo_nome",
+            ]
+        )
+        & set(candidates)
+    )
     selected_models = st.multiselect(
         "Modelos sobrepostos",
         candidates,
-        default=[candidates[0]],
-        help="Os trabalhos exibidos são aqueles vinculados aos modelos selecionados.",
+        default=default_models,
+        help=(
+            "Por padrão são selecionadas todas as revisões mais recentes com situação "
+            "temporal Vigente ou Alerta."
+        ),
     )
     if not selected_models:
-        st.info("Selecione ao menos um modelo para montar a sobreposição.")
+        st.info(
+            "Nenhum modelo vigente ou em alerta está disponível nos filtros atuais. "
+            "Selecione manualmente um modelo para montar a sobreposição."
+        )
         return
     show_samples = st.toggle("Exibir pontos da amostra", value=False)
     work_points = (
@@ -473,6 +501,9 @@ def page_coverage(works: pd.DataFrame, samples: pd.DataFrame) -> None:
     )
 
     summary_records: list[dict[str, object]] = []
+    temporal_status_by_model = governed_catalog.set_index("modelo_nome")[
+        "status_temporal"
+    ].to_dict()
     for model_name in selected_models:
         model_works = work_points[work_points["modelo_nome"] == model_name]
         model_samples = sample_points[sample_points["modelo_nome"] == model_name]
@@ -481,6 +512,7 @@ def page_coverage(works: pd.DataFrame, samples: pd.DataFrame) -> None:
         summary_records.append(
             {
                 "modelo_nome": model_name,
+                "status_temporal": temporal_status_by_model.get(model_name, "Indeterminado"),
                 "pontos_amostra": len(model_samples),
                 "trabalhos": model_works["trabalho_id"].nunique(),
                 "dentro_envoltoria_pct": (
@@ -498,6 +530,7 @@ def page_coverage(works: pd.DataFrame, samples: pd.DataFrame) -> None:
         width="stretch",
         column_config={
             "modelo_nome": "Modelo",
+            "status_temporal": "Situação temporal",
             "pontos_amostra": "Pontos da amostra",
             "trabalhos": "Trabalhos",
             "dentro_envoltoria_pct": st.column_config.NumberColumn(
@@ -622,6 +655,19 @@ Os limites são calculados por mês-calendário: exatamente 6 meses ainda é vig
 12 meses permanece em alerta. A regra temporal é obrigatória e prevalece sobre o nível qualitativo
 derivado do escore ponderado.
 
+### Consolidação de revisões
+
+- nomes com a mesma base numérica e sufixos finais alfabéticos são tratados como uma linhagem;
+- a ordem é alfabética, portanto `MOD_V_TER_Z1_006J` substitui `MOD_V_TER_Z1_006I`;
+- usos históricos das revisões anteriores são atribuídos à revisão mais recente para medir demanda;
+- catálogo e amostra espacial antigos são descartados, sem misturar metadados ou coordenadas de
+  treinamento entre revisões;
+- o mapa seleciona inicialmente todas as revisões mais recentes **Vigentes** ou em **Alerta**.
+
+A revisão vencedora é determinada pela união dos nomes encontrados nas fontes. Se uma fonte indicar
+uma revisão nova mas seu `.DAI` não estiver disponível, o aplicativo não herda silenciosamente os
+metadados ou a geometria da revisão antiga.
+
 ### O que o MVP ainda não conclui
 
 - distância espacial não substitui análise de extrapolação multivariada;
@@ -660,6 +706,9 @@ def main() -> None:
     except (OSError, ValueError) as error:
         st.error(f"Não foi possível carregar os arquivos: {error}")
         st.stop()
+    works, catalog, samples, revision_audit = consolidate_latest_model_revisions(
+        works, catalog, samples
+    )
     filtered_works = global_filters(works) if not works.empty else works
     availability = analysis_availability(works, catalog, samples)
     page_order = ["Visão geral", "Modelos", "Cobertura", "Prioridades", "Metodologia"]
@@ -672,6 +721,19 @@ def main() -> None:
         f"{'✅' if not catalog.empty else '—'} modelos `.DAI`/catálogo · "
         f"{'✅' if not samples.empty else '—'} amostra espacial"
     )
+    consolidated = revision_audit[revision_audit["n_versoes"] > 1]
+    if not consolidated.empty:
+        st.sidebar.caption(
+            f"{len(consolidated)} linhagem(ns) consolidada(s) na revisão mais recente."
+        )
+        with st.sidebar.expander("Ver consolidação de versões"):
+            st.dataframe(
+                consolidated[
+                    ["modelo_linhagem", "modelo_mais_recente", "versoes_encontradas"]
+                ],
+                hide_index=True,
+                width="stretch",
+            )
     unavailable_pages = [page_name for page_name in page_order if not availability[page_name]]
     if unavailable_pages:
         st.sidebar.caption(
@@ -692,7 +754,7 @@ def main() -> None:
     elif page == "Modelos":
         page_models(filtered_works, catalog)
     elif page == "Cobertura":
-        page_coverage(filtered_works, samples)
+        page_coverage(filtered_works, catalog, samples)
     elif page == "Prioridades":
         page_priority(filtered_works, catalog, samples)
     else:

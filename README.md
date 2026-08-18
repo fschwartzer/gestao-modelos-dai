@@ -19,6 +19,7 @@ O projeto parte de duas fontes:
 - distância de cada trabalho ao dado de treinamento mais próximo;
 - correção automática de coordenadas históricas invertidas;
 - triagem de modelos por demanda, recência, suporte espacial e presença no catálogo;
+- consolidação automática das revisões alfabéticas, mantendo somente a mais recente;
 - modo de demonstração com dados totalmente sintéticos;
 - envio transitório de múltiplos `.DAI` e um banco SQLite pela interface;
 - alternativa compatível com catálogos CSV pré-extraídos.
@@ -87,12 +88,24 @@ As fontes são independentes e as páginas são habilitadas somente quando seus 
 |---|:---:|:---:|:---:|
 | Visão geral dos trabalhos | Obrigatório | — | — |
 | Catálogo de modelos | — | Obrigatório | — |
-| Cobertura espacial | Obrigatório | — | Obrigatório |
+| Cobertura espacial | Obrigatório | Obrigatório | Obrigatório |
 | Triagem integrada | Obrigatório | Obrigatório | Obrigatório |
 | Metodologia | — | — | — |
 
 Assim, é possível trabalhar somente com SQLite ou somente com `.DAI`; as análises incompatíveis
 ficam fora da navegação e a barra lateral informa quais fontes estão disponíveis.
+
+### Revisões dos modelos
+
+Quando modelos compartilham a mesma base numérica, a letra final representa a revisão. A maior
+revisão alfabética é considerada a atual: por exemplo, `MOD_V_TER_Z1_006J` substitui
+`MOD_V_TER_Z1_006I`.
+
+A revisão mais recente é identificada pela união dos nomes presentes no SQLite, no catálogo e nas
+amostras. Os usos históricos são consolidados nessa revisão para que cobertura e triagem não contem
+versões da mesma linhagem como modelos independentes. Catálogos e amostras de revisões antigas são
+descartados, e nunca atribuídos à revisão nova. Assim, se o `.DAI` atual estiver ausente, o aplicativo
+não usa silenciosamente as datas, métricas ou coordenadas de treinamento da versão anterior.
 
 ### Arquivos locais protegidos
 
@@ -179,6 +192,10 @@ pós-modelagem e não cria features, portanto não mistura treino e teste. COD, 
 e regressividade ainda exigem valores observados e estimados em uma base de teste ou validação
 espacial/temporal identificada.
 
+No mapa, todas as revisões mais recentes com situação **Vigente** ou **Alerta** são selecionadas por
+padrão. Modelos classificados como **Não utilizar** permanecem disponíveis para seleção manual e
+auditoria, mas não entram na visualização inicial.
+
 ## Escore de triagem
 
 O MVP calcula uma fila operacional:
@@ -208,7 +225,7 @@ suporte espacial e presença no catálogo.
 
 - distância espacial não mede extrapolação multivariada;
 - a envoltória convexa pode superestimar suporte em amostras descontínuas;
-- o nome histórico ainda não substitui um vínculo por hash/versionamento formal;
+- a revisão inferida pelo nome não substitui um vínculo institucional por hash/versionamento formal;
 - a diferença entre valor estimado e adotado não está disponível no banco atual;
 - cobertura autorizada e vigência precisam de cadastro institucional;
 - o mapa usa serviços públicos de tiles e requer internet no navegador.

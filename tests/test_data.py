@@ -108,5 +108,5 @@ def test_analysis_availability_with_independent_sources() -> None:
     assert all(complete.values())
 
     samples_and_sqlite = analysis_availability(works, empty, samples)
-    assert samples_and_sqlite["Cobertura"] is True
+    assert samples_and_sqlite["Cobertura"] is False
     assert samples_and_sqlite["Prioridades"] is False

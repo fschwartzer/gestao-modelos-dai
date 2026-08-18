@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
 from src.config import DEMO_DB
+from src.data import load_demo_data
+from src.metrics import add_temporal_governance
 from tests.test_dai import synthetic_dai_bytes
 
 
@@ -67,3 +70,26 @@ def test_dai_only_enables_model_catalog() -> None:
     assert app.title[0].value == "Catálogo de modelos"
     assert list(app.sidebar.radio[1].options) == ["Modelos", "Metodologia"]
     assert any("uso histórico" in message.value for message in app.info)
+
+
+def test_coverage_defaults_to_all_current_and_alerted_models() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(app_path, default_timeout=20).run()
+    app.sidebar.radio[1].set_value("Cobertura").run()
+
+    _, catalog, samples = load_demo_data()
+    governed = add_temporal_governance(catalog, today=date.today())
+    expected = (
+        set(
+            governed.loc[
+                governed["status_temporal"].isin(["Vigente", "Alerta"]),
+                "modelo_nome",
+            ]
+        )
+        & set(samples["modelo_nome"])
+    )
+    selector = next(
+        item for item in app.multiselect if item.label == "Modelos sobrepostos"
+    )
+    assert not app.exception
+    assert set(selector.value) == expected

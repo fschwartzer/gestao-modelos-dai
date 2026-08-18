@@ -201,7 +201,7 @@ def analysis_availability(
     return {
         "Visão geral": has_works,
         "Modelos": has_catalog,
-        "Cobertura": has_works and has_samples,
+        "Cobertura": has_works and has_catalog and has_samples,
         "Prioridades": has_works and has_catalog and has_samples,
         "Metodologia": True,
     }
