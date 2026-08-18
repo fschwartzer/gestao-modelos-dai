@@ -115,12 +115,51 @@ def _normalize_demand(series: pd.Series) -> pd.Series:
     return values / maximum if maximum > 0 else values * 0
 
 
-def _staleness_score(dates: pd.Series, today: date) -> pd.Series:
-    parsed = pd.to_datetime(dates, errors="coerce")
-    reference = pd.Timestamp(today)
-    months = (reference.year - parsed.dt.year) * 12 + (reference.month - parsed.dt.month)
-    score = (months.clip(lower=0) / 36).clip(upper=1)
-    return score.fillna(1.0)
+def add_temporal_governance(
+    frame: pd.DataFrame,
+    *,
+    today: date | None = None,
+    date_column: str = "data_final",
+) -> pd.DataFrame:
+    """Aplica as regras operacionais de contemporaneidade do modelo.
+
+    Até 6 meses completos: vigente. Acima de 6 e até 12 meses: alerta.
+    Acima de 12 meses, ou sem data verificável: não utilizar.
+    """
+
+    result = frame.copy()
+    reference = pd.Timestamp(today or date.today()).normalize()
+    if date_column in result:
+        parsed = pd.to_datetime(result[date_column], errors="coerce", utc=True).dt.tz_convert(None)
+    else:
+        parsed = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns]")
+    parsed = parsed.dt.normalize()
+
+    alert_cutoff = reference - pd.DateOffset(months=6)
+    stop_cutoff = reference - pd.DateOffset(months=12)
+    result["status_temporal"] = "Vigente"
+    result["motivo_temporal"] = "Dado mais contemporâneo dentro do limite de 6 meses"
+
+    alert_mask = parsed.notna() & (parsed < alert_cutoff) & (parsed >= stop_cutoff)
+    stop_mask = parsed.notna() & (parsed < stop_cutoff)
+    missing_mask = parsed.isna()
+    result.loc[alert_mask, "status_temporal"] = "Alerta"
+    result.loc[alert_mask, "motivo_temporal"] = (
+        "Dado mais contemporâneo excede 6 meses, sem ultrapassar 12 meses"
+    )
+    result.loc[stop_mask, "status_temporal"] = "Não utilizar"
+    result.loc[stop_mask, "motivo_temporal"] = "Dado mais contemporâneo excede 12 meses"
+    result.loc[missing_mask, "status_temporal"] = "Não utilizar"
+    result.loc[missing_mask, "motivo_temporal"] = "Data do dado mais contemporâneo ausente"
+
+    month_age = (
+        (reference.year - parsed.dt.year) * 12
+        + (reference.month - parsed.dt.month)
+        - (parsed.dt.day > reference.day).astype("Int64")
+    )
+    result["idade_dado_meses"] = month_age.clip(lower=0).astype("Int64")
+    result["apto_para_uso"] = result["status_temporal"] != "Não utilizar"
+    return result
 
 
 def build_priority_table(
@@ -161,8 +200,11 @@ def build_priority_table(
     distances = model_distance_summary(works, samples)
     result = result.merge(distances, on="modelo_nome", how="left")
 
+    result = add_temporal_governance(result, today=reference_date)
     result["score_demanda"] = _normalize_demand(result["demanda_recente"])
-    result["score_recencia"] = _staleness_score(result["data_final"], reference_date)
+    result["score_recencia"] = result["status_temporal"].map(
+        {"Vigente": 0.0, "Alerta": 0.5, "Não utilizar": 1.0}
+    )
     result["score_suporte"] = (result["dist_p90_km"] / 5.0).clip(upper=1).fillna(1.0)
     result["score_catalogo"] = (~result["no_catalogo"]).astype(float)
     result["score_triagem"] = 100 * (
@@ -176,8 +218,22 @@ def build_priority_table(
         bins=[-np.inf, 40, 65, np.inf],
         labels=["Baixa", "Média", "Alta"],
     ).astype(str)
+    result.loc[
+        (result["status_temporal"] == "Alerta") & (result["nivel_triagem"] == "Baixa"),
+        "nivel_triagem",
+    ] = "Média"
+    result.loc[result["status_temporal"] == "Não utilizar", "nivel_triagem"] = "Alta"
+    result["ordem_temporal"] = result["status_temporal"].map(
+        {"Não utilizar": 2, "Alerta": 1, "Vigente": 0}
+    )
     result = add_model_dimensions(result)
-    return result.sort_values(["score_triagem", "demanda_recente"], ascending=False)
+    return (
+        result.sort_values(
+            ["ordem_temporal", "score_triagem", "demanda_recente"], ascending=False
+        )
+        .drop(columns="ordem_temporal")
+        .reset_index(drop=True)
+    )
 
 
 def distance_bins(distances: pd.Series) -> pd.DataFrame:

@@ -29,6 +29,7 @@ from src.data import (
 )
 from src.metrics import (
     add_model_dimensions,
+    add_temporal_governance,
     build_priority_table,
     distance_bins,
     haversine_nearest_km,
@@ -281,7 +282,9 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     if catalog.empty:
         st.warning("Envie arquivos `.DAI` confiáveis para consultar métricas e períodos.")
         return
-    catalog_view = add_model_dimensions(catalog)
+    catalog_view = add_temporal_governance(
+        add_model_dimensions(catalog), today=date.today()
+    )
     usage = works.groupby("modelo_nome")["trabalho_id"].nunique().rename("usos_historicos")
     catalog_view = catalog_view.merge(usage, on="modelo_nome", how="left")
     catalog_view["usos_historicos"] = catalog_view["usos_historicos"].fillna(0).astype(int)
@@ -296,6 +299,8 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
         "zonas_nome",
         "data_inicial",
         "data_final",
+        "idade_dado_meses",
+        "status_temporal",
         "n_modelo",
         "n_outliers",
         "r2_ajustado",
@@ -311,7 +316,11 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
             "familia": "Família",
             "zonas_nome": "Zonas",
             "data_inicial": st.column_config.DateColumn("Início dos dados"),
-            "data_final": st.column_config.DateColumn("Fim dos dados"),
+            "data_final": st.column_config.DateColumn("Dado mais contemporâneo"),
+            "idade_dado_meses": st.column_config.NumberColumn(
+                "Meses completos", format="%d"
+            ),
+            "status_temporal": "Situação temporal",
             "n_modelo": st.column_config.NumberColumn("Amostra", format="%d"),
             "n_outliers": st.column_config.NumberColumn("Excluídos", format="%d"),
             "r2_ajustado": st.column_config.NumberColumn("R² ajustado", format="%.3f"),
@@ -322,6 +331,14 @@ def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     st.subheader("Ficha do modelo")
     selected_model = st.selectbox("Modelo", sorted(filtered["modelo_nome"].unique()))
     record = filtered[filtered["modelo_nome"] == selected_model].iloc[0]
+    temporal_status = record["status_temporal"]
+    temporal_reason = record["motivo_temporal"]
+    if temporal_status == "Não utilizar":
+        st.error(f"Não utilizar este modelo. {temporal_reason}.")
+    elif temporal_status == "Alerta":
+        st.warning(f"Alerta de contemporaneidade. {temporal_reason}.")
+    else:
+        st.success("Modelo dentro do limite temporal de 6 meses.")
     columns = st.columns(4)
     columns[0].metric("Amostra utilizada", int(record.get("n_modelo", 0) or 0))
     columns[1].metric("Amostra completa", int(record.get("n_completo", 0) or 0))
@@ -456,13 +473,19 @@ def page_coverage(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
 def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFrame) -> None:
     st.title("Triagem para atualização e auditoria")
     st.caption(
-        "O escore organiza a revisão; não declara que um modelo é inválido. "
-        "Pesos: demanda 35%, recência 25%, suporte espacial 25% e presença no catálogo 15%."
+        "Regra temporal obrigatória: acima de 6 meses gera alerta; acima de 12 meses, "
+        "o modelo não deve ser utilizado. O escore preserva os pesos de demanda 35%, "
+        "recência 25%, suporte espacial 25% e presença no catálogo 15%."
     )
     table = build_priority_table(works, catalog, samples, today=date.today())
     if table.empty:
         st.info("Não há dados suficientes para gerar a triagem.")
         return
+    status_counts = table["status_temporal"].value_counts()
+    temporal_metrics = st.columns(3)
+    temporal_metrics[0].metric("Não utilizar", int(status_counts.get("Não utilizar", 0)))
+    temporal_metrics[1].metric("Em alerta", int(status_counts.get("Alerta", 0)))
+    temporal_metrics[2].metric("Vigentes", int(status_counts.get("Vigente", 0)))
     top = table.head(15).copy()
     left, right = st.columns([1, 1.35], gap="large")
     with left:
@@ -473,7 +496,7 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
                 "modelo_nome",
                 "score_triagem",
                 {"modelo_nome": "Modelo", "score_triagem": "Escore (0–100)"},
-                color="nivel_triagem",
+                color="status_temporal",
                 height=550,
             ),
             width="stretch",
@@ -482,7 +505,9 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
     with right:
         st.subheader("Onde ocorreram os usos prioritários")
         mapped = works.merge(
-            table[["modelo_nome", "score_triagem", "nivel_triagem"]],
+            table[
+                ["modelo_nome", "score_triagem", "nivel_triagem", "status_temporal"]
+            ],
             on="modelo_nome",
             how="left",
         )
@@ -500,6 +525,9 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
             "demanda_recente",
             "demanda_total",
             "data_final",
+            "idade_dado_meses",
+            "status_temporal",
+            "motivo_temporal",
             "dist_p90_km",
             "no_catalogo",
             "score_triagem",
@@ -515,7 +543,12 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
             "familia": "Família",
             "demanda_recente": "Trabalhos recentes",
             "demanda_total": "Trabalhos totais",
-            "data_final": st.column_config.DateColumn("Fim dos dados"),
+            "data_final": st.column_config.DateColumn("Dado mais contemporâneo"),
+            "idade_dado_meses": st.column_config.NumberColumn(
+                "Meses completos", format="%d"
+            ),
+            "status_temporal": "Situação temporal",
+            "motivo_temporal": "Regra aplicada",
             "dist_p90_km": st.column_config.NumberColumn("Distância P90 (km)", format="%.2f"),
             "no_catalogo": "No catálogo atual",
             "score_triagem": st.column_config.ProgressColumn(
@@ -538,6 +571,17 @@ def page_methodology() -> None:
 - recebe diretamente bancos SQLite e múltiplos arquivos `.DAI` confiáveis;
 - sobrepõe trabalhos à envoltória convexa da amostra espacial de cada modelo;
 - cria uma triagem transparente para atualização e auditoria.
+
+### Regra temporal de uso
+
+- até 6 meses completos desde o dado mais contemporâneo: **Vigente**;
+- acima de 6 meses e até 12 meses: **Alerta**;
+- acima de 12 meses: **Não utilizar**;
+- sem data final verificável: **Não utilizar** por precaução.
+
+Os limites são calculados por mês-calendário: exatamente 6 meses ainda é vigente e exatamente
+12 meses permanece em alerta. A regra temporal é obrigatória e prevalece sobre o nível qualitativo
+derivado do escore ponderado.
 
 ### O que o MVP ainda não conclui
 

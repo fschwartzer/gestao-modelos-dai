@@ -144,17 +144,18 @@ def priority_map(points: pd.DataFrame) -> go.Figure:
     valid = points.dropna(subset=["latitude", "longitude"]).copy()
     if valid.empty:
         return go.Figure()
-    color_map = {"Alta": "#dc2626", "Média": "#f59e0b", "Baixa": "#16a34a"}
+    color_map = {"Não utilizar": "#dc2626", "Alerta": "#f59e0b", "Vigente": "#16a34a"}
     figure = px.scatter_map(
         valid,
         lat="latitude",
         lon="longitude",
-        color="nivel_triagem",
+        color="status_temporal",
         color_discrete_map=color_map,
-        category_orders={"nivel_triagem": ["Alta", "Média", "Baixa"]},
+        category_orders={"status_temporal": ["Não utilizar", "Alerta", "Vigente"]},
         hover_name="nome",
         hover_data={
             "modelo_nome": True,
+            "status_temporal": True,
             "score_triagem": ":.1f",
             "ano": True,
             "latitude": False,
@@ -169,7 +170,7 @@ def priority_map(points: pd.DataFrame) -> go.Figure:
     figure.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
         height=500,
-        legend_title="Triagem",
+        legend_title="Situação temporal",
     )
     return figure
 
@@ -183,12 +184,19 @@ def horizontal_bar(
     height: int = 430,
 ) -> go.Figure:
     ordered = frame.sort_values(value, ascending=True)
+    temporal_colors = (
+        {"Não utilizar": "#dc2626", "Alerta": "#f59e0b", "Vigente": "#16a34a"}
+        if color == "status_temporal"
+        else None
+    )
     figure = px.bar(
         ordered,
         x=value,
         y=category,
         orientation="h",
         color=color,
+        color_discrete_map=temporal_colors,
+        category_orders={"status_temporal": ["Não utilizar", "Alerta", "Vigente"]},
         text=value,
         labels=labels,
     )

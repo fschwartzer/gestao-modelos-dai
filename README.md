@@ -177,7 +177,19 @@ O MVP calcula uma fila operacional:
 | Distância P90 dos trabalhos à amostra | 25% |
 | Ausência no catálogo atual | 15% |
 
-O escore não declara que um modelo é inválido. Ele serve para localizar situações que merecem auditoria técnica.
+Além do escore, aplica-se uma regra temporal obrigatória sobre a data do dado mais contemporâneo:
+
+| Idade do dado mais contemporâneo | Situação |
+|---|---|
+| Até 6 meses | Vigente |
+| Acima de 6 e até 12 meses | Alerta |
+| Acima de 12 meses | Não utilizar |
+| Data ausente | Não utilizar |
+
+Os limites usam mês-calendário: exatamente 6 meses ainda é vigente e exatamente 12 meses permanece
+em alerta. O status temporal prevalece sobre o nível qualitativo: “Não utilizar” força nível alto e
+“Alerta” força, no mínimo, nível médio. O escore numérico permanece disponível para auditar demanda,
+suporte espacial e presença no catálogo.
 
 ## Limitações do MVP
 
