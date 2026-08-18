@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -9,6 +11,24 @@ from src.config import DEMO_DB
 from src.data import load_demo_data
 from src.metrics import add_temporal_governance
 from tests.test_dai import synthetic_dai_bytes
+
+
+def test_app_recovers_from_stale_metrics_module() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    script = (
+        "import src.metrics as metrics; "
+        "del metrics.consolidate_latest_model_revisions; "
+        "import app; "
+        "assert callable(app.consolidate_latest_model_revisions)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_app_starts_in_demo_mode() -> None:

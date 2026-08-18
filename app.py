@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from datetime import date
 from pathlib import Path
 
@@ -32,10 +33,18 @@ from src.metrics import (
     add_model_dimensions,
     add_temporal_governance,
     build_priority_table,
-    consolidate_latest_model_revisions,
     distance_bins,
     haversine_nearest_km,
 )
+try:
+    from src.metrics import consolidate_latest_model_revisions
+except ImportError:
+    # O hot-reload pode manter o módulo da versão anterior enquanto relê app.py.
+    from src import metrics as metrics_module
+
+    consolidate_latest_model_revisions = importlib.reload(
+        metrics_module
+    ).consolidate_latest_model_revisions
 from src.spatial import SPATIAL_CRS, add_reach_status
 
 
