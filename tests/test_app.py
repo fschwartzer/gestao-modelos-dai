@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 from src.config import DEMO_DB
 from src.data import load_demo_data
-from src.metrics import add_temporal_governance
+from src.metrics import add_model_dimensions, add_temporal_governance
 from tests.test_dai import synthetic_dai_bytes
 
 
@@ -120,6 +120,36 @@ def test_coverage_defaults_to_all_current_and_alerted_models() -> None:
     )
     assert not app.exception
     assert set(selector.value) == expected
+
+
+def test_coverage_model_options_follow_family_filter() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(app_path, default_timeout=20).run()
+    app.sidebar.radio[1].set_value("Cobertura").run()
+
+    _, catalog, samples = load_demo_data()
+    catalog = add_model_dimensions(catalog)
+    target_family = "Venda — Terreno"
+    expected_options = sorted(
+        set(
+            catalog.loc[catalog["familia"] == target_family, "modelo_nome"]
+        )
+        & set(samples["modelo_nome"])
+    )
+    family_filter = next(
+        item for item in app.sidebar.multiselect if item.label == "Famílias"
+    )
+    family_filter.set_value([target_family]).run()
+    selector = next(
+        item for item in app.multiselect if item.label == "Modelos sobrepostos"
+    )
+
+    assert not app.exception
+    assert list(selector.options) == expected_options
+    assert all(
+        catalog.set_index("modelo_nome").loc[model_name, "familia"] == target_family
+        for model_name in selector.value
+    )
 
 
 def test_official_priority_queue_is_independent_from_sidebar_filters() -> None:

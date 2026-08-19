@@ -437,11 +437,31 @@ def page_coverage(
             "Os modelos processados não forneceram coordenadas `lat/lon` válidas para o mapa."
         )
         return
-    candidates = sorted(set(catalog["modelo_nome"]) & set(samples["modelo_nome"]))
+    work_dimensions = (
+        works if "familia" in works.columns else add_model_dimensions(works)
+    )
+    catalog_dimensions = add_model_dimensions(catalog)
+    active_families = sorted(work_dimensions["familia"].dropna().unique())
+    family_catalog = catalog_dimensions[
+        catalog_dimensions["familia"].isin(active_families)
+    ].copy()
+    candidates = sorted(
+        set(family_catalog["modelo_nome"]) & set(samples["modelo_nome"])
+    )
     if not candidates:
-        st.warning("Nenhum nome de modelo coincide entre o catálogo e as amostras.")
+        st.warning(
+            "Nenhum modelo das famílias selecionadas coincide entre o catálogo e as "
+            "amostras. Ajuste o filtro “Famílias” na barra lateral."
+        )
         return
-    governed_catalog = add_temporal_governance(catalog, today=date.today())
+    st.caption(
+        "Famílias ativas no mapa: "
+        + ", ".join(active_families)
+        + ". Altere a seleção na barra lateral para atualizar modelos e envoltórias."
+    )
+    governed_catalog = add_temporal_governance(
+        family_catalog, today=date.today()
+    )
     default_models = sorted(
         set(
             governed_catalog.loc[
@@ -455,9 +475,10 @@ def page_coverage(
         "Modelos sobrepostos",
         candidates,
         default=default_models,
+        key="coverage_models_" + "__".join(active_families),
         help=(
-            "Por padrão são selecionadas todas as revisões mais recentes com situação "
-            "temporal Vigente ou Alerta."
+            "As opções obedecem ao filtro lateral de Famílias. Por padrão são "
+            "selecionadas as revisões mais recentes em situação Vigente ou Alerta."
         ),
     )
     if not selected_models:
