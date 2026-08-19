@@ -18,7 +18,8 @@ O projeto parte de duas fontes:
 - classificação dos trabalhos dentro/fora da envoltória convexa de cada amostra;
 - distância de cada trabalho ao dado de treinamento mais próximo;
 - correção automática de coordenadas históricas invertidas;
-- triagem de modelos por demanda, recência, suporte espacial e presença no catálogo;
+- fila de intervenção P0–P3 separando governança, completude e escore auxiliar;
+- exportação CSV versionada da fila oficial, com data de referência e cobertura das evidências;
 - consolidação automática das revisões alfabéticas, mantendo somente a mais recente;
 - modo de demonstração com dados totalmente sintéticos;
 - envio transitório de múltiplos `.DAI` e um banco SQLite pela interface;
@@ -196,16 +197,16 @@ No mapa, todas as revisões mais recentes com situação **Vigente** ou **Alerta
 padrão. Modelos classificados como **Não utilizar** permanecem disponíveis para seleção manual e
 auditoria, mas não entram na visualização inicial.
 
-## Escore de triagem
+## Fila de intervenção e escore auxiliar
 
-O MVP calcula uma fila operacional:
+A decisão é organizada em camadas independentes:
 
-| Componente | Peso |
-|---|---:|
-| Demanda nos dois anos mais recentes do banco | 35% |
-| Antiguidade do fim da amostra | 25% |
-| Distância P90 dos trabalhos à amostra | 25% |
-| Ausência no catálogo atual | 15% |
+| Camada | Resultado |
+|---|---|
+| Governança temporal | Vigente, Alerta ou Não utilizar |
+| Completude | Avaliável, Incompleta ou Sem evidência |
+| Prioridade | P0, P1, P2 ou P3 |
+| Escore auxiliar | Desempate dentro da mesma classe |
 
 Além do escore, aplica-se uma regra temporal obrigatória sobre a data do dado mais contemporâneo:
 
@@ -217,9 +218,45 @@ Além do escore, aplica-se uma regra temporal obrigatória sobre a data do dado 
 | Data ausente | Não utilizar |
 
 Os limites usam mês-calendário: exatamente 6 meses ainda é vigente e exatamente 12 meses permanece
-em alerta. O status temporal prevalece sobre o nível qualitativo: “Não utilizar” força nível alto e
-“Alerta” força, no mínimo, nível médio. O escore numérico permanece disponível para auditar demanda,
-suporte espacial e presença no catálogo.
+em alerta. A situação temporal é uma regra mandatória e não recebe peso no escore.
+
+As classes de ação são:
+
+| Classe | Interpretação operacional |
+|---|---|
+| P0 | Não utilizar com demanda recente: suspender e atualizar/substituir imediatamente |
+| P1 | Atualização prioritária ou decisão entre atualizar e aposentar |
+| P2 | Revisão programada, alerta sem demanda ou evidências incompletas |
+| P3 | Monitoramento periódico |
+
+A fila oficial usa sempre o portfólio completo e não muda com os filtros da interface. A demanda
+procura uma data completa do trabalho e usa janela móvel de 12 meses. Quando o SQLite contém somente
+o ano, o cálculo usa o ano civil atual e o anterior como aproximação, deixando o método visível.
+
+O escore auxiliar usa uma escala fixa de demanda: 20 trabalhos na janela atingem impacto máximo,
+valor configurável em `src/config.py`. Ele não é normalizado pelo modelo mais demandado do arquivo
+atual. Sua estrutura de evidências é:
+
+| Componente | Peso planejado |
+|---|---:|
+| Impacto operacional | 40% |
+| Risco de desempenho em teste | 35% |
+| Suporte espacial/extrapolação | 15% |
+| Risco operacional e completude | 10% |
+
+O componente de desempenho permanece ausente até existir uma base de teste identificada. Evidência
+ausente não recebe penalidade técnica nem é redistribuída entre os demais componentes. O aplicativo
+mostra a cobertura percentual e rotula o escore como provisório. R², MSE ou resíduos de ajuste não
+são usados como substitutos de COD, PRD, mediana das razões, regressividade e estabilidade fora da
+amostra.
+
+O suporte espacial deixa de usar um limite universal de 5 km. Para cada modelo, compara-se a distância
+P90 dos trabalhos recentes à amostra com a distância P90 entre vizinhos da própria amostra. A parcela
+de trabalhos fora da envoltória convexa também participa do diagnóstico. O risco de distância cresce
+linearmente de zero, na razão 1×, até o máximo, na razão 3×; depois é combinado com a parcela fora da
+envoltória. A unidade permanece quilômetro, em WGS84, com distância haversine. Esse diagnóstico é
+pós-modelagem e não cria features de treino. Resultados com menos de 10 trabalhos georreferenciados
+são marcados como exploratórios e não alteram automaticamente a classe de prioridade.
 
 ## Limitações do MVP
 

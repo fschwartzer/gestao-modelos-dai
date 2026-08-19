@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
 
 from src.config import DEMO_SAMPLES
 from src.data import (
+    _read_sqlite_connection,
     analysis_availability,
     load_csv_source,
     load_demo_data,
@@ -14,6 +16,34 @@ from src.data import (
     standardize_samples,
     unique_work_points,
 )
+
+
+def test_sqlite_optional_work_date_is_loaded_when_available() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE trabalhos (
+            trabalho_id TEXT PRIMARY KEY, nome TEXT, nome_original TEXT,
+            tipo_codigo TEXT, tipo_label TEXT, ano INTEGER, data_emissao TEXT,
+            total_registros INTEGER, total_imoveis INTEGER, total_modelos INTEGER
+        );
+        CREATE TABLE trabalho_imoveis (
+            imovel_id INTEGER PRIMARY KEY, trabalho_id TEXT, endereco TEXT,
+            numero TEXT, label TEXT, coord_x REAL, coord_y REAL
+        );
+        CREATE TABLE trabalho_imovel_modelos (imovel_id INTEGER, modelo_nome TEXT);
+        INSERT INTO trabalhos VALUES
+            ('T1', 'Trabalho', 'Trabalho', 'LA', 'Laudo', 2026, '2026-07-15', 1, 1, 1);
+        INSERT INTO trabalho_imoveis VALUES
+            (1, 'T1', 'Rua A', '1', 'Rua A, 1', -51.20, -30.03);
+        INSERT INTO trabalho_imovel_modelos VALUES (1, 'MOD_V_TER_Z1_001A');
+        """
+    )
+    try:
+        frame = _read_sqlite_connection(connection)
+    finally:
+        connection.close()
+    assert frame.iloc[0]["data_trabalho"] == pd.Timestamp("2026-07-15")
 
 
 def test_normalize_original_coordinates() -> None:
@@ -39,6 +69,7 @@ def test_demo_data_loads_and_has_valid_points() -> None:
     assert points["latitude"].between(-30.35, -29.80).all()
     assert points["longitude"].between(-51.40, -50.95).all()
     assert works["modelo_nome"].nunique() >= 10
+    assert "data_trabalho" in works
 
 
 def test_gzip_csv_can_be_loaded_from_uploaded_bytes() -> None:

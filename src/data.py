@@ -100,6 +100,36 @@ def _read_sqlite_connection(connection: sqlite3.Connection) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Banco incompatível. Tabelas ausentes: {', '.join(sorted(missing))}")
     frame = pd.read_sql_query(WORK_QUERY, connection)
+    work_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(trabalhos)").fetchall()
+    }
+    date_column = next(
+        (
+            candidate
+            for candidate in (
+                "data_trabalho",
+                "data_conclusao",
+                "data_emissao",
+                "data_criacao",
+                "created_at",
+                "data",
+            )
+            if candidate in work_columns
+        ),
+        None,
+    )
+    if date_column:
+        work_dates = pd.read_sql_query(
+            f'SELECT trabalho_id, "{date_column}" AS data_trabalho FROM trabalhos',
+            connection,
+        )
+        work_dates["data_trabalho"] = pd.to_datetime(
+            work_dates["data_trabalho"], errors="coerce", format="mixed", dayfirst=True
+        )
+        frame = frame.merge(work_dates, on="trabalho_id", how="left")
+    else:
+        frame["data_trabalho"] = pd.NaT
     return normalize_coordinates(frame)
 
 
@@ -145,7 +175,9 @@ def standardize_catalog(frame: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("O catálogo deve conter a coluna 'modelo_nome'.")
     for column in ("data_inicial", "data_final", "artifact_mtime"):
         if column in result.columns:
-            result[column] = pd.to_datetime(result[column], errors="coerce")
+            result[column] = pd.to_datetime(
+                result[column], errors="coerce", format="mixed", dayfirst=True
+            )
     for column in ("n_modelo", "n_completo", "n_outliers", "r2_ajustado"):
         if column in result.columns:
             result[column] = pd.to_numeric(result[column], errors="coerce")

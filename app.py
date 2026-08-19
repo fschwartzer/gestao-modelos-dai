@@ -258,6 +258,9 @@ def global_filters(works: pd.DataFrame) -> pd.DataFrame:
     enriched = add_model_dimensions(works)
     st.sidebar.divider()
     st.sidebar.subheader("Filtros")
+    st.sidebar.caption(
+        "Afetam as análises exploratórias; a fila oficial de Prioridades usa o portfólio completo."
+    )
     years = sorted(pd.to_numeric(enriched["ano"], errors="coerce").dropna().astype(int).unique())
     selected_years = st.sidebar.multiselect("Anos", years, default=years)
     types = sorted(enriched["tipo_label"].dropna().unique())
@@ -551,32 +554,56 @@ def page_coverage(
 
 
 def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFrame) -> None:
-    st.title("Triagem para atualização e auditoria")
+    st.title("Fila de intervenção e governança")
     st.caption(
-        "Regra temporal obrigatória: acima de 6 meses gera alerta; acima de 12 meses, "
-        "o modelo não deve ser utilizado. O escore preserva os pesos de demanda 35%, "
-        "recência 25%, suporte espacial 25% e presença no catálogo 15%."
+        "A situação temporal determina a possibilidade de uso; P0–P3 organiza a ação. "
+        "O escore é apenas um desempate operacional e não mede qualidade preditiva."
     )
     table = build_priority_table(works, catalog, samples, today=date.today())
     if table.empty:
         st.info("Não há dados suficientes para gerar a triagem.")
         return
+    st.info(
+        "Esta é a fila oficial do portfólio completo e não é alterada pelos filtros da "
+        f"barra lateral. Demanda: {table.iloc[0]['metodo_demanda']}; regra "
+        f"{table.iloc[0]['regra_triagem_versao']}; referência de impacto: "
+        f"{int(table.iloc[0]['referencia_demanda_trabalhos'])} trabalhos na janela."
+    )
+    st.warning(
+        "Não há base de teste identificada para COD, PRD, mediana das razões e "
+        "regressividade. Por isso, todos os escores numéricos permanecem provisórios."
+    )
+    st.download_button(
+        "Baixar fila oficial (.csv)",
+        data=table.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"fila_modelos_{date.today().isoformat()}.csv",
+        mime="text/csv",
+        help="Snapshot agregado, sem endereços ou identificadores de imóveis.",
+    )
+    priority_counts = table["prioridade_intervencao"].value_counts()
+    priority_metrics = st.columns(4)
+    priority_metrics[0].metric("P0 · ação imediata", int(priority_counts.get("P0", 0)))
+    priority_metrics[1].metric("P1 · prioritária", int(priority_counts.get("P1", 0)))
+    priority_metrics[2].metric("P2 · programar", int(priority_counts.get("P2", 0)))
+    priority_metrics[3].metric("P3 · monitorar", int(priority_counts.get("P3", 0)))
+
     status_counts = table["status_temporal"].value_counts()
-    temporal_metrics = st.columns(3)
-    temporal_metrics[0].metric("Não utilizar", int(status_counts.get("Não utilizar", 0)))
-    temporal_metrics[1].metric("Em alerta", int(status_counts.get("Alerta", 0)))
-    temporal_metrics[2].metric("Vigentes", int(status_counts.get("Vigente", 0)))
+    st.caption(
+        f"Situação temporal: {int(status_counts.get('Não utilizar', 0))} não utilizar · "
+        f"{int(status_counts.get('Alerta', 0))} em alerta · "
+        f"{int(status_counts.get('Vigente', 0))} vigentes."
+    )
     top = table.head(15).copy()
     left, right = st.columns([1, 1.35], gap="large")
     with left:
-        st.subheader("Modelos prioritários")
+        st.subheader("Ordenação dentro das classes")
         st.plotly_chart(
             horizontal_bar(
                 top,
                 "modelo_nome",
-                "score_triagem",
-                {"modelo_nome": "Modelo", "score_triagem": "Escore (0–100)"},
-                color="status_temporal",
+                "score_auxiliar",
+                {"modelo_nome": "Modelo", "score_auxiliar": "Escore auxiliar"},
+                color="prioridade_intervencao",
                 height=550,
             ),
             width="stretch",
@@ -586,7 +613,13 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
         st.subheader("Onde ocorreram os usos prioritários")
         mapped = works.merge(
             table[
-                ["modelo_nome", "score_triagem", "nivel_triagem", "status_temporal"]
+                [
+                    "modelo_nome",
+                    "score_triagem",
+                    "prioridade_intervencao",
+                    "nivel_triagem",
+                    "status_temporal",
+                ]
             ],
             on="modelo_nome",
             how="left",
@@ -597,21 +630,29 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
             config=PLOTLY_CONFIG,
         )
 
-    st.subheader("Componentes da triagem")
+    st.subheader("Fundamentação da fila")
     display = table[
         [
             "modelo_nome",
             "familia",
+            "prioridade_intervencao",
+            "acao_recomendada",
             "demanda_recente",
             "demanda_total",
             "data_final",
             "idade_dado_meses",
             "status_temporal",
-            "motivo_temporal",
+            "status_completude",
+            "motivo_completude",
             "dist_p90_km",
-            "no_catalogo",
-            "score_triagem",
-            "nivel_triagem",
+            "amostra_nn_p90_km",
+            "dist_relativa_p90",
+            "fora_envoltoria_pct",
+            "score_suporte",
+            "confianca_suporte",
+            "score_auxiliar",
+            "cobertura_evidencias_pct",
+            "status_escore",
         ]
     ].copy()
     st.dataframe(
@@ -621,20 +662,38 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
         column_config={
             "modelo_nome": "Modelo",
             "familia": "Família",
-            "demanda_recente": "Trabalhos recentes",
+            "prioridade_intervencao": "Prioridade",
+            "acao_recomendada": "Próxima ação",
+            "demanda_recente": "Trabalhos na janela",
             "demanda_total": "Trabalhos totais",
             "data_final": st.column_config.DateColumn("Dado mais contemporâneo"),
             "idade_dado_meses": st.column_config.NumberColumn(
                 "Meses completos", format="%d"
             ),
             "status_temporal": "Situação temporal",
-            "motivo_temporal": "Regra aplicada",
+            "status_completude": "Completude",
+            "motivo_completude": "Pendências de evidência",
             "dist_p90_km": st.column_config.NumberColumn("Distância P90 (km)", format="%.2f"),
-            "no_catalogo": "No catálogo atual",
-            "score_triagem": st.column_config.ProgressColumn(
-                "Escore", min_value=0, max_value=100, format="%.1f"
+            "amostra_nn_p90_km": st.column_config.NumberColumn(
+                "P90 entre dados da amostra (km)", format="%.2f"
             ),
-            "nivel_triagem": "Nível",
+            "dist_relativa_p90": st.column_config.NumberColumn(
+                "Distância relativa", format="%.2f×"
+            ),
+            "fora_envoltoria_pct": st.column_config.NumberColumn(
+                "Fora da envoltória", format="%.1f%%"
+            ),
+            "score_suporte": st.column_config.ProgressColumn(
+                "Risco espacial", min_value=0, max_value=1, format="%.2f"
+            ),
+            "confianca_suporte": "Confiança espacial",
+            "score_auxiliar": st.column_config.ProgressColumn(
+                "Escore auxiliar", min_value=0, max_value=100, format="%.1f"
+            ),
+            "cobertura_evidencias_pct": st.column_config.ProgressColumn(
+                "Cobertura das evidências", min_value=0, max_value=100, format="%.0f%%"
+            ),
+            "status_escore": "Validade do escore",
         },
     )
 
@@ -661,8 +720,30 @@ def page_methodology() -> None:
 - sem data final verificável: **Não utilizar** por precaução.
 
 Os limites são calculados por mês-calendário: exatamente 6 meses ainda é vigente e exatamente
-12 meses permanece em alerta. A regra temporal é obrigatória e prevalece sobre o nível qualitativo
-derivado do escore ponderado.
+12 meses permanece em alerta. A regra temporal é obrigatória e não faz parte do escore auxiliar.
+
+### Fila de intervenção
+
+- **P0:** modelo que não deve ser utilizado, mas teve demanda na janela recente;
+- **P1:** atualização prioritária ou decisão entre atualização e aposentadoria;
+- **P2:** revisão programada, alerta sem demanda ou evidências incompletas;
+- **P3:** monitoramento periódico.
+
+A fila é calculada sempre sobre o portfólio completo, independentemente dos filtros da interface.
+Quando existe data completa do trabalho, a demanda usa janela móvel de 12 meses. Se o SQLite
+fornece apenas o ano, a aplicação usa o ano civil atual e o anterior e identifica explicitamente
+essa aproximação.
+
+O escore numérico serve somente para ordenar modelos dentro de uma mesma classe. Ele separa impacto
+operacional, risco de desempenho, suporte espacial e risco operacional, informando também a cobertura
+das evidências. Como os `.DAI` atuais não identificam uma base de teste, o risco de desempenho fica
+ausente e o escore é marcado como provisório. R² de ajuste não é usado como substituto.
+
+Ausência de catálogo, data ou geometria é registrada em **Completude**, sem ser interpretada como
+prova de baixo desempenho. O suporte espacial compara a distância P90 dos trabalhos recentes com a
+distância P90 entre vizinhos da própria amostra e com a proporção fora da envoltória convexa; as
+distâncias usam WGS84 e haversine em quilômetros. Com menos de 10 trabalhos georreferenciados,
+o diagnóstico é exploratório e não promove automaticamente a prioridade.
 
 ### Consolidação de revisões
 
@@ -684,7 +765,7 @@ metadados ou a geometria da revisão antiga.
 - R² não determina sozinho a qualidade ou a validade do modelo;
 - o aplicativo não calcula COD, PRD, mediana das razões ou regressividade sem valores observados
   e estimados em uma base de teste identificada;
-- o escore de triagem não substitui decisão técnica;
+- o escore auxiliar não substitui decisão técnica e não é conclusivo sem validação de desempenho;
 - diferenças entre estimativa e valor adotado só poderão ser avaliadas quando esses campos forem registrados.
 
 ### Segurança dos dados
@@ -765,7 +846,7 @@ def main() -> None:
     elif page == "Cobertura":
         page_coverage(filtered_works, catalog, samples)
     elif page == "Prioridades":
-        page_priority(filtered_works, catalog, samples)
+        page_priority(works, catalog, samples)
     else:
         page_methodology()
 

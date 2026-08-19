@@ -155,6 +155,7 @@ def priority_map(points: pd.DataFrame) -> go.Figure:
         hover_name="nome",
         hover_data={
             "modelo_nome": True,
+            "prioridade_intervencao": True,
             "status_temporal": True,
             "score_triagem": ":.1f",
             "ano": True,
@@ -184,19 +185,31 @@ def horizontal_bar(
     height: int = 430,
 ) -> go.Figure:
     ordered = frame.sort_values(value, ascending=True)
-    temporal_colors = (
-        {"Não utilizar": "#dc2626", "Alerta": "#f59e0b", "Vigente": "#16a34a"}
-        if color == "status_temporal"
-        else None
-    )
+    color_maps = {
+        "status_temporal": {
+            "Não utilizar": "#dc2626",
+            "Alerta": "#f59e0b",
+            "Vigente": "#16a34a",
+        },
+        "prioridade_intervencao": {
+            "P0": "#b91c1c",
+            "P1": "#f97316",
+            "P2": "#2563eb",
+            "P3": "#16a34a",
+        },
+    }
+    category_orders = {
+        "status_temporal": ["Não utilizar", "Alerta", "Vigente"],
+        "prioridade_intervencao": ["P0", "P1", "P2", "P3"],
+    }
     figure = px.bar(
         ordered,
         x=value,
         y=category,
         orientation="h",
         color=color,
-        color_discrete_map=temporal_colors,
-        category_orders={"status_temporal": ["Não utilizar", "Alerta", "Vigente"]},
+        color_discrete_map=color_maps.get(color),
+        category_orders=category_orders,
         text=value,
         labels=labels,
     )

@@ -51,10 +51,27 @@ TIPO_TRABALHO_LABELS = {
     "PIV": "Parecer Indicativo de Valor",
 }
 
+# Mantido para compatibilidade com notebooks que importam a configuração antiga.
 SCORE_WEIGHTS = {
     "demanda": 0.35,
     "recencia": 0.25,
     "suporte": 0.25,
     "catalogo": 0.15,
+}
+
+TRIAGE_RULE_VERSION = "2.0"
+RECENT_DEMAND_WINDOW_MONTHS = 12
+DEMAND_REFERENCE_WORKS = 20
+MIN_SPATIAL_SAMPLE = 3
+MIN_SPATIAL_DIAGNOSTIC_WORKS = 10
+SPATIAL_RELATIVE_RISK_START = 1.0
+SPATIAL_RELATIVE_RISK_FULL = 3.0
+
+# O risco de desempenho permanece sem valor até existir base de teste identificada.
+TRIAGE_EVIDENCE_WEIGHTS = {
+    "impacto": 0.40,
+    "desempenho": 0.35,
+    "suporte": 0.15,
+    "operacional": 0.10,
 }
 

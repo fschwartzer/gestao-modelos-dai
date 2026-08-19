@@ -40,7 +40,7 @@ def test_app_starts_in_demo_mode() -> None:
     expected_titles = {
         "Modelos": "Catálogo de modelos",
         "Cobertura": "Cobertura e suporte espacial",
-        "Prioridades": "Triagem para atualização e auditoria",
+        "Prioridades": "Fila de intervenção e governança",
         "Metodologia": "Metodologia e segurança",
     }
     for page, title in expected_titles.items():
@@ -113,3 +113,21 @@ def test_coverage_defaults_to_all_current_and_alerted_models() -> None:
     )
     assert not app.exception
     assert set(selector.value) == expected
+
+
+def test_official_priority_queue_is_independent_from_sidebar_filters() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(app_path, default_timeout=30).run()
+    app.sidebar.radio[1].set_value("Prioridades").run()
+    before = app.dataframe[-1].value[
+        ["modelo_nome", "prioridade_intervencao", "demanda_recente", "score_auxiliar"]
+    ].reset_index(drop=True)
+
+    year_filter = next(item for item in app.sidebar.multiselect if item.label == "Anos")
+    year_filter.set_value([min(year_filter.options)]).run()
+    after = app.dataframe[-1].value[
+        ["modelo_nome", "prioridade_intervencao", "demanda_recente", "score_auxiliar"]
+    ].reset_index(drop=True)
+
+    assert not app.exception
+    assert before.equals(after)
