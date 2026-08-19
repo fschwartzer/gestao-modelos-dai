@@ -8,6 +8,31 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# O Streamlit Cloud pode reler app.py sem invalidar módulos já importados. A
+# versão esperada funciona como um contrato de implantação: configuração e
+# métricas precisam pertencer à mesma versão antes de a interface ser montada.
+EXPECTED_TRIAGE_RULE_VERSION = "2.0"
+
+from src import config as config_module
+
+if getattr(config_module, "TRIAGE_RULE_VERSION", None) != EXPECTED_TRIAGE_RULE_VERSION:
+    config_module = importlib.reload(config_module)
+
+ALLOW_DAI_UPLOADS = config_module.ALLOW_DAI_UPLOADS
+PRIVATE_DIR = config_module.PRIVATE_DIR
+
+from src import metrics as metrics_module
+
+if getattr(metrics_module, "TRIAGE_RULE_VERSION", None) != EXPECTED_TRIAGE_RULE_VERSION:
+    metrics_module = importlib.reload(metrics_module)
+
+add_model_dimensions = metrics_module.add_model_dimensions
+add_temporal_governance = metrics_module.add_temporal_governance
+build_priority_table = metrics_module.build_priority_table
+consolidate_latest_model_revisions = metrics_module.consolidate_latest_model_revisions
+distance_bins = metrics_module.distance_bins
+haversine_nearest_km = metrics_module.haversine_nearest_km
+
 from src.charts import (
     PLOTLY_CONFIG,
     annual_stacked_bar,
@@ -17,7 +42,6 @@ from src.charts import (
     horizontal_bar,
     priority_map,
 )
-from src.config import ALLOW_DAI_UPLOADS, PRIVATE_DIR
 from src.dai import extract_dai_path, extract_many_dai_bytes
 from src.data import (
     analysis_availability,
@@ -29,22 +53,6 @@ from src.data import (
     standardize_samples,
     unique_work_points,
 )
-from src.metrics import (
-    add_model_dimensions,
-    add_temporal_governance,
-    build_priority_table,
-    distance_bins,
-    haversine_nearest_km,
-)
-try:
-    from src.metrics import consolidate_latest_model_revisions
-except ImportError:
-    # O hot-reload pode manter o módulo da versão anterior enquanto relê app.py.
-    from src import metrics as metrics_module
-
-    consolidate_latest_model_revisions = importlib.reload(
-        metrics_module
-    ).consolidate_latest_model_revisions
 from src.spatial import SPATIAL_CRS, add_reach_status
 
 
@@ -563,6 +571,46 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
     if table.empty:
         st.info("Não há dados suficientes para gerar a triagem.")
         return
+    display_columns = [
+        "modelo_nome",
+        "familia",
+        "prioridade_intervencao",
+        "acao_recomendada",
+        "demanda_recente",
+        "demanda_total",
+        "data_final",
+        "idade_dado_meses",
+        "status_temporal",
+        "status_completude",
+        "motivo_completude",
+        "dist_p90_km",
+        "amostra_nn_p90_km",
+        "dist_relativa_p90",
+        "fora_envoltoria_pct",
+        "score_suporte",
+        "confianca_suporte",
+        "score_auxiliar",
+        "cobertura_evidencias_pct",
+        "status_escore",
+    ]
+    required_columns = set(display_columns) | {
+        "metodo_demanda",
+        "regra_triagem_versao",
+        "referencia_demanda_trabalhos",
+        "score_triagem",
+        "nivel_triagem",
+    }
+    missing_columns = sorted(required_columns.difference(table.columns))
+    if missing_columns:
+        st.error(
+            "A plataforma manteve módulos de versões diferentes durante a atualização. "
+            "Reinicie o aplicativo em “Manage app” → “Reboot app” para concluir a "
+            "implantação."
+        )
+        st.caption(
+            "Campos da regra atual ainda indisponíveis: " + ", ".join(missing_columns)
+        )
+        return
     st.info(
         "Esta é a fila oficial do portfólio completo e não é alterada pelos filtros da "
         f"barra lateral. Demanda: {table.iloc[0]['metodo_demanda']}; regra "
@@ -631,30 +679,7 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
         )
 
     st.subheader("Fundamentação da fila")
-    display = table[
-        [
-            "modelo_nome",
-            "familia",
-            "prioridade_intervencao",
-            "acao_recomendada",
-            "demanda_recente",
-            "demanda_total",
-            "data_final",
-            "idade_dado_meses",
-            "status_temporal",
-            "status_completude",
-            "motivo_completude",
-            "dist_p90_km",
-            "amostra_nn_p90_km",
-            "dist_relativa_p90",
-            "fora_envoltoria_pct",
-            "score_suporte",
-            "confianca_suporte",
-            "score_auxiliar",
-            "cobertura_evidencias_pct",
-            "status_escore",
-        ]
-    ].copy()
+    display = table[display_columns].copy()
     st.dataframe(
         display,
         width="stretch",

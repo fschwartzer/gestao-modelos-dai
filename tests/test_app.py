@@ -13,13 +13,20 @@ from src.metrics import add_temporal_governance
 from tests.test_dai import synthetic_dai_bytes
 
 
-def test_app_recovers_from_stale_metrics_module() -> None:
+def test_app_reloads_stale_release_modules() -> None:
     project_root = Path(__file__).resolve().parents[1]
     script = (
+        "import src.config as config; "
         "import src.metrics as metrics; "
-        "del metrics.consolidate_latest_model_revisions; "
+        "config.TRIAGE_RULE_VERSION = '1.0'; "
+        "metrics.TRIAGE_RULE_VERSION = '1.0'; "
+        "stale = lambda *args, **kwargs: 'stale'; "
+        "metrics.build_priority_table = stale; "
         "import app; "
-        "assert callable(app.consolidate_latest_model_revisions)"
+        "assert app.config_module.TRIAGE_RULE_VERSION == '2.0'; "
+        "assert app.metrics_module.TRIAGE_RULE_VERSION == '2.0'; "
+        "assert callable(app.consolidate_latest_model_revisions); "
+        "assert app.build_priority_table is not stale"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
