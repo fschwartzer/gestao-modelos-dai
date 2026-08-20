@@ -262,12 +262,12 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
     )
 
 
-def global_filters(works: pd.DataFrame) -> pd.DataFrame:
+def global_filters(works: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     enriched = add_model_dimensions(works)
     st.sidebar.divider()
     st.sidebar.subheader("Filtros")
     st.sidebar.caption(
-        "Afetam as análises exploratórias; a fila oficial de Prioridades usa o portfólio completo."
+        "Afetam todas as análises, inclusive a fila de Prioridades e o arquivo CSV."
     )
     years = sorted(pd.to_numeric(enriched["ano"], errors="coerce").dropna().astype(int).unique())
     selected_years = st.sidebar.multiselect("Anos", years, default=years)
@@ -275,11 +275,28 @@ def global_filters(works: pd.DataFrame) -> pd.DataFrame:
     selected_types = st.sidebar.multiselect("Tipos de trabalho", types, default=types)
     families = sorted(enriched["familia"].dropna().unique())
     selected_families = st.sidebar.multiselect("Famílias", families, default=families)
-    return enriched[
+    filtered = enriched[
         enriched["ano"].isin(selected_years)
         & enriched["tipo_label"].isin(selected_types)
         & enriched["familia"].isin(selected_families)
     ].copy()
+    return filtered, selected_families
+
+
+def filter_model_sources_by_families(
+    catalog: pd.DataFrame,
+    samples: pd.DataFrame,
+    selected_families: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aplica aos insumos dos modelos o mesmo recorte familiar da interface."""
+
+    def filter_source(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return frame.copy()
+        enriched = add_model_dimensions(frame)
+        return enriched[enriched["familia"].isin(selected_families)].copy()
+
+    return filter_source(catalog), filter_source(samples)
 
 
 def page_overview(works: pd.DataFrame, source_label: str) -> None:
@@ -334,10 +351,13 @@ def page_overview(works: pd.DataFrame, source_label: str) -> None:
 def page_models(works: pd.DataFrame, catalog: pd.DataFrame) -> None:
     st.title("Catálogo de modelos")
     if catalog.empty:
-        st.warning("Envie arquivos `.DAI` confiáveis para consultar métricas e períodos.")
+        st.warning(
+            "Nenhum modelo corresponde às famílias selecionadas na barra lateral."
+        )
         return
     st.caption(
-        "O catálogo exibe somente a revisão alfabética mais recente de cada linhagem."
+        "O catálogo obedece às famílias selecionadas na barra lateral e exibe somente "
+        "a revisão alfabética mais recente de cada linhagem."
     )
     catalog_view = add_temporal_governance(
         add_model_dimensions(catalog), today=date.today()
@@ -437,14 +457,9 @@ def page_coverage(
             "Os modelos processados não forneceram coordenadas `lat/lon` válidas para o mapa."
         )
         return
-    work_dimensions = (
-        works if "familia" in works.columns else add_model_dimensions(works)
-    )
     catalog_dimensions = add_model_dimensions(catalog)
-    active_families = sorted(work_dimensions["familia"].dropna().unique())
-    family_catalog = catalog_dimensions[
-        catalog_dimensions["familia"].isin(active_families)
-    ].copy()
+    active_families = sorted(catalog_dimensions["familia"].dropna().unique())
+    family_catalog = catalog_dimensions.copy()
     candidates = sorted(
         set(family_catalog["modelo_nome"]) & set(samples["modelo_nome"])
     )
@@ -633,8 +648,9 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
         )
         return
     st.info(
-        "Esta é a fila oficial do portfólio completo e não é alterada pelos filtros da "
-        f"barra lateral. Demanda: {table.iloc[0]['metodo_demanda']}; regra "
+        "Esta fila corresponde aos filtros atuais da barra lateral. Uma seleção parcial "
+        "pode alterar a demanda e as classes P0–P3; para auditar o portfólio completo, "
+        f"selecione todas as opções. Demanda: {table.iloc[0]['metodo_demanda']}; regra "
         f"{table.iloc[0]['regra_triagem_versao']}; referência de impacto: "
         f"{int(table.iloc[0]['referencia_demanda_trabalhos'])} trabalhos na janela."
     )
@@ -643,9 +659,9 @@ def page_priority(works: pd.DataFrame, catalog: pd.DataFrame, samples: pd.DataFr
         "regressividade. Por isso, todos os escores numéricos permanecem provisórios."
     )
     st.download_button(
-        "Baixar fila oficial (.csv)",
+        "Baixar fila filtrada (.csv)",
         data=table.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"fila_modelos_{date.today().isoformat()}.csv",
+        file_name=f"fila_modelos_filtrada_{date.today().isoformat()}.csv",
         mime="text/csv",
         help="Snapshot agregado, sem endereços ou identificadores de imóveis.",
     )
@@ -775,10 +791,11 @@ Os limites são calculados por mês-calendário: exatamente 6 meses ainda é vig
 - **P2:** revisão programada, alerta sem demanda ou evidências incompletas;
 - **P3:** monitoramento periódico.
 
-A fila é calculada sempre sobre o portfólio completo, independentemente dos filtros da interface.
-Quando existe data completa do trabalho, a demanda usa janela móvel de 12 meses. Se o SQLite
-fornece apenas o ano, a aplicação usa o ano civil atual e o anterior e identifica explicitamente
-essa aproximação.
+A fila, seus gráficos, mapa, tabela e CSV obedecem aos filtros de anos, tipos de trabalho e famílias.
+Uma seleção parcial produz uma visão analítica parcial; para a auditoria institucional do portfólio,
+é necessário selecionar todas as opções. Quando existe data completa do trabalho, a demanda usa
+janela móvel de 12 meses. Se o SQLite fornece apenas o ano, a aplicação usa o ano civil atual e o
+anterior e identifica explicitamente essa aproximação.
 
 O escore numérico serve somente para ordenar modelos dentro de uma mesma classe. Ele separa impacto
 operacional, risco de desempenho, suporte espacial e risco operacional, informando também a cobertura
@@ -845,7 +862,18 @@ def main() -> None:
     works, catalog, samples, revision_audit = consolidate_latest_model_revisions(
         works, catalog, samples
     )
-    filtered_works = global_filters(works) if not works.empty else works
+    if works.empty:
+        filtered_works = works
+        selected_families = (
+            sorted(add_model_dimensions(catalog)["familia"].dropna().unique())
+            if not catalog.empty
+            else []
+        )
+    else:
+        filtered_works, selected_families = global_filters(works)
+    filtered_catalog, filtered_samples = filter_model_sources_by_families(
+        catalog, samples, selected_families
+    )
     availability = analysis_availability(works, catalog, samples)
     page_order = ["Visão geral", "Modelos", "Cobertura", "Prioridades", "Metodologia"]
     available_pages = [page_name for page_name in page_order if availability[page_name]]
@@ -888,11 +916,11 @@ def main() -> None:
     if page == "Visão geral":
         page_overview(filtered_works, source_label)
     elif page == "Modelos":
-        page_models(filtered_works, catalog)
+        page_models(filtered_works, filtered_catalog)
     elif page == "Cobertura":
-        page_coverage(filtered_works, catalog, samples)
+        page_coverage(filtered_works, filtered_catalog, filtered_samples)
     elif page == "Prioridades":
-        page_priority(works, catalog, samples)
+        page_priority(filtered_works, filtered_catalog, filtered_samples)
     else:
         page_methodology()
 

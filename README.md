@@ -19,7 +19,7 @@ O projeto parte de duas fontes:
 - distância de cada trabalho ao dado de treinamento mais próximo;
 - correção automática de coordenadas históricas invertidas;
 - fila de intervenção P0–P3 separando governança, completude e escore auxiliar;
-- exportação CSV versionada da fila oficial, com data de referência e cobertura das evidências;
+- exportação CSV versionada da fila filtrada, com data de referência e cobertura das evidências;
 - consolidação automática das revisões alfabéticas, mantendo somente a mais recente;
 - modo de demonstração com dados totalmente sintéticos;
 - envio transitório de múltiplos `.DAI` e um banco SQLite pela interface;
@@ -229,9 +229,11 @@ As classes de ação são:
 | P2 | Revisão programada, alerta sem demanda ou evidências incompletas |
 | P3 | Monitoramento periódico |
 
-A fila oficial usa sempre o portfólio completo e não muda com os filtros da interface. A demanda
-procura uma data completa do trabalho e usa janela móvel de 12 meses. Quando o SQLite contém somente
-o ano, o cálculo usa o ano civil atual e o anterior como aproximação, deixando o método visível.
+A fila, os gráficos, o mapa, a tabela e o CSV obedecem aos filtros de anos, tipos de trabalho e
+famílias. Uma seleção parcial gera uma visão analítica parcial; para auditar o portfólio completo,
+é necessário selecionar todas as opções. A demanda procura uma data completa do trabalho e usa
+janela móvel de 12 meses. Quando o SQLite contém somente o ano, o cálculo usa o ano civil atual e
+o anterior como aproximação, deixando o método visível.
 
 O escore auxiliar usa uma escala fixa de demanda: 20 trabalhos na janela atingem impacto máximo,
 valor configurável em `src/config.py`. Ele não é normalizado pelo modelo mais demandado do arquivo

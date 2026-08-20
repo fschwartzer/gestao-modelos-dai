@@ -152,19 +152,68 @@ def test_coverage_model_options_follow_family_filter() -> None:
     )
 
 
-def test_official_priority_queue_is_independent_from_sidebar_filters() -> None:
+def test_model_catalog_follows_sidebar_family_filter() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(app_path, default_timeout=20).run()
+    app.sidebar.radio[1].set_value("Modelos").run()
+    target_family = "Venda — Terreno"
+    family_filter = next(
+        item for item in app.sidebar.multiselect if item.label == "Famílias"
+    )
+    family_filter.set_value([target_family]).run()
+
+    displayed = app.dataframe[-1].value
+    assert not app.exception
+    assert set(displayed["familia"]) == {target_family}
+
+
+def test_priority_queue_follows_all_sidebar_filters() -> None:
     app_path = Path(__file__).resolve().parents[1] / "app.py"
     app = AppTest.from_file(app_path, default_timeout=30).run()
     app.sidebar.radio[1].set_value("Prioridades").run()
-    before = app.dataframe[-1].value[
-        ["modelo_nome", "prioridade_intervencao", "demanda_recente", "score_auxiliar"]
-    ].reset_index(drop=True)
+    works, _, _ = load_demo_data()
+    enriched = add_model_dimensions(works)
+    target_family = "Venda — Terreno"
+    target_year = int(
+        enriched.loc[enriched["familia"] == target_family, "ano"].max()
+    )
+    target_type = (
+        enriched.loc[
+            (enriched["familia"] == target_family)
+            & (enriched["ano"] == target_year),
+            "tipo_label",
+        ]
+        .value_counts()
+        .index[0]
+    )
 
-    year_filter = next(item for item in app.sidebar.multiselect if item.label == "Anos")
-    year_filter.set_value([min(year_filter.options)]).run()
-    after = app.dataframe[-1].value[
-        ["modelo_nome", "prioridade_intervencao", "demanda_recente", "score_auxiliar"]
-    ].reset_index(drop=True)
+    family_filter = next(
+        item for item in app.sidebar.multiselect if item.label == "Famílias"
+    )
+    family_filter.set_value([target_family]).run()
+    year_filter = next(
+        item for item in app.sidebar.multiselect if item.label == "Anos"
+    )
+    year_filter.set_value([target_year]).run()
+    type_filter = next(
+        item for item in app.sidebar.multiselect if item.label == "Tipos de trabalho"
+    )
+    type_filter.set_value([target_type]).run()
+
+    displayed = app.dataframe[-1].value
+    expected_demand = (
+        enriched.loc[
+            (enriched["familia"] == target_family)
+            & (enriched["ano"] == target_year)
+            & (enriched["tipo_label"] == target_type)
+        ]
+        .groupby("modelo_nome")["trabalho_id"]
+        .nunique()
+    )
 
     assert not app.exception
-    assert before.equals(after)
+    assert set(displayed["familia"]) == {target_family}
+    assert displayed.set_index("modelo_nome")["demanda_total"].to_dict() == {
+        model_name: int(expected_demand.get(model_name, 0))
+        for model_name in displayed["modelo_nome"]
+    }
