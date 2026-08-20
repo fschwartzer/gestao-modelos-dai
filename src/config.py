@@ -75,3 +75,23 @@ TRIAGE_EVIDENCE_WEIGHTS = {
     "operacional": 0.10,
 }
 
+HF_REPO_ID = os.getenv(
+    "HF_REPO_ID",
+    "gui-sparim/repositorio_mesa",
+).strip()
+
+HF_REPO_REVISION = os.getenv(
+    "HF_REPO_REVISION",
+    "main",
+).strip()
+
+# Confirmação administrativa para permitir a abertura dos .dai baixados.
+TRUST_HF_DAI = os.getenv(
+    "TRUST_HF_DAI",
+    "false",
+).strip().casefold() in {
+    "1",
+    "true",
+    "sim",
+    "yes",
+}

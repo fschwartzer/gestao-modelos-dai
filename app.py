@@ -8,18 +8,25 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import os
+
 # O Streamlit Cloud pode reler app.py sem invalidar módulos já importados. A
 # versão esperada funciona como um contrato de implantação: configuração e
 # métricas precisam pertencer à mesma versão antes de a interface ser montada.
 EXPECTED_TRIAGE_RULE_VERSION = "2.0"
 
 from src import config as config_module
+from src.huggingface_source import download_hf_snapshot, locate_hf_sources
 
 if getattr(config_module, "TRIAGE_RULE_VERSION", None) != EXPECTED_TRIAGE_RULE_VERSION:
     config_module = importlib.reload(config_module)
 
 ALLOW_DAI_UPLOADS = config_module.ALLOW_DAI_UPLOADS
 PRIVATE_DIR = config_module.PRIVATE_DIR
+
+HF_REPO_ID = config_module.HF_REPO_ID
+HF_REPO_REVISION = config_module.HF_REPO_REVISION
+TRUST_HF_DAI = config_module.TRUST_HF_DAI
 
 from src import metrics as metrics_module
 
@@ -86,6 +93,14 @@ def cached_uploaded_dais(
     catalog, samples, errors = extract_many_dai_bytes(sources, trust_source=True)
     return standardize_catalog(catalog), standardize_samples(samples), errors
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_hf_snapshot(repo_id: str, revision: str) -> str:
+    snapshot_path = download_hf_snapshot(
+        repo_id=repo_id,
+        revision=revision,
+        token=os.getenv("HF_TOKEN") or None,
+    )
+    return str(snapshot_path)
 
 @st.cache_data(show_spinner=False)
 def cached_local_data(
@@ -153,15 +168,95 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
         or local_samples.exists()
     )
 
-    options = ["Demonstração"]
+    options = [
+        "Demonstração",
+        "Repositório Hugging Face",
+    ]
+
     if local_available:
         options.append("Arquivos locais protegidos")
+
     options.append("Enviar arquivos nesta sessão")
     mode = st.sidebar.radio("Fonte dos dados", options, index=0)
 
     if mode == "Demonstração":
         works, catalog, samples = cached_demo()
         return works, catalog, samples, "Dados sintéticos de demonstração"
+
+    if mode == "Repositório Hugging Face":
+        try:
+            with st.spinner("Baixando e preparando os arquivos do Hugging Face..."):
+                snapshot_dir = Path(
+                    cached_hf_snapshot(
+                        HF_REPO_ID,
+                        HF_REPO_REVISION,
+                    )
+                )
+
+            db_path, dai_paths, catalog_path, samples_path = (
+                locate_hf_sources(snapshot_dir)
+            )
+
+            # Se os CSVs pré-extraídos existirem, eles têm preferência:
+            # são mais rápidos e evitam desserializar pickle no servidor.
+            has_extracted_catalog = (
+                catalog_path is not None
+                and samples_path is not None
+            )
+
+            dai_paths_to_load = (
+                ()
+                if has_extracted_catalog
+                else tuple(str(path) for path in dai_paths)
+            )
+
+            if dai_paths_to_load and not TRUST_HF_DAI:
+                st.error(
+                    "Há arquivos .DAI no Hugging Face, mas sua abertura não "
+                    "foi autorizada. Defina TRUST_HF_DAI=true nos Secrets."
+                )
+                st.stop()
+
+            missing_csv = snapshot_dir / "__arquivo_ausente__.csv"
+
+            works, catalog, samples, errors = cached_local_data(
+                str(db_path) if db_path else None,
+                dai_paths_to_load,
+                str(catalog_path or missing_csv),
+                str(samples_path or missing_csv),
+            )
+
+            show_extraction_errors(errors)
+
+            if works.empty and catalog.empty:
+                st.error(
+                    "O repositório foi acessado, mas nenhuma fonte compatível "
+                    "foi encontrada."
+                )
+                st.stop()
+
+            model_source = (
+                "catálogo pré-extraído"
+                if has_extracted_catalog
+                else f"{len(dai_paths)} arquivo(s) .DAI"
+            )
+
+            return (
+                works,
+                catalog,
+                samples,
+                "Hugging Face · "
+                f"SQLite: {'sim' if not works.empty else 'não'} · "
+                f"modelos: {len(catalog)} · "
+                f"origem: {model_source}",
+            )
+
+        except Exception as error:
+            st.error(
+                "Não foi possível carregar o repositório do Hugging Face: "
+                f"{type(error).__name__}: {error}"
+            )
+            st.stop()
 
     if mode == "Arquivos locais protegidos":
         selected_local_dais: tuple[str, ...] = ()
