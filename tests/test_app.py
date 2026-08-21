@@ -18,15 +18,20 @@ def test_app_reloads_stale_release_modules() -> None:
     script = (
         "import src.config as config; "
         "import src.metrics as metrics; "
+        "import src.dai as dai; "
         "config.TRIAGE_RULE_VERSION = '1.0'; "
         "metrics.TRIAGE_RULE_VERSION = '1.0'; "
+        "dai.DAI_EXTRACTOR_VERSION = '2.0'; "
         "stale = lambda *args, **kwargs: 'stale'; "
         "metrics.build_priority_table = stale; "
+        "dai.extract_dai_path = stale; "
         "import app; "
         "assert app.config_module.TRIAGE_RULE_VERSION == '2.0'; "
         "assert app.metrics_module.TRIAGE_RULE_VERSION == '2.0'; "
+        "assert app.dai_module.DAI_EXTRACTOR_VERSION == '3.1'; "
         "assert callable(app.consolidate_latest_model_revisions); "
-        "assert app.build_priority_table is not stale"
+        "assert app.build_priority_table is not stale; "
+        "assert app.extract_dai_path is not stale"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],

@@ -14,6 +14,7 @@ import os
 # versão esperada funciona como um contrato de implantação: configuração e
 # métricas precisam pertencer à mesma versão antes de a interface ser montada.
 EXPECTED_TRIAGE_RULE_VERSION = "2.0"
+EXPECTED_DAI_EXTRACTOR_VERSION = "3.1"
 
 from src import config as config_module
 from src.huggingface_source import download_hf_snapshot, locate_hf_sources
@@ -49,12 +50,15 @@ from src.charts import (
     horizontal_bar,
     priority_map,
 )
-from src.dai import (
-    extract_dai_path,
-    extract_many_dai_bytes,
-    is_sha256_identifier,
-    restore_model_names_from_artifacts,
-)
+from src import dai as dai_module
+
+if getattr(dai_module, "DAI_EXTRACTOR_VERSION", None) != EXPECTED_DAI_EXTRACTOR_VERSION:
+    dai_module = importlib.reload(dai_module)
+
+extract_dai_path = dai_module.extract_dai_path
+extract_many_dai_bytes = dai_module.extract_many_dai_bytes
+is_sha256_identifier = dai_module.is_sha256_identifier
+restore_model_names_from_artifacts = dai_module.restore_model_names_from_artifacts
 from src.data import (
     analysis_availability,
     load_csv_source,
@@ -94,7 +98,9 @@ def cached_uploaded_csv(raw: bytes) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def cached_uploaded_dais(
     sources: tuple[tuple[str, bytes], ...],
+    extractor_version: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    del extractor_version  # participa da chave do cache e invalida versões anteriores
     catalog, samples, errors = extract_many_dai_bytes(sources, trust_source=True)
     return standardize_catalog(catalog), standardize_samples(samples), errors
 
@@ -104,7 +110,9 @@ def cached_restore_hf_model_names(
     catalog: pd.DataFrame,
     samples: pd.DataFrame,
     dai_paths: tuple[str, ...],
+    extractor_version: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    del extractor_version
     repaired_catalog, repaired_samples, audit = restore_model_names_from_artifacts(
         catalog, samples, dai_paths
     )
@@ -124,13 +132,16 @@ def cached_hf_snapshot(repo_id: str, revision: str) -> str:
     )
     return str(snapshot_path)
 
+
 @st.cache_data(show_spinner=False)
 def cached_local_data(
     db_path: str | None,
     dai_paths: tuple[str, ...],
     catalog_path: str,
     samples_path: str,
+    extractor_version: str,
 ):
+    del extractor_version
     works = load_sqlite_path(db_path) if db_path else pd.DataFrame()
     if not dai_paths:
         catalog = standardize_catalog(load_csv_source(catalog_path))
@@ -168,8 +179,30 @@ def show_extraction_errors(errors: pd.DataFrame) -> None:
     if errors.empty:
         return
     st.sidebar.warning(f"{len(errors)} arquivo(s) .DAI não puderam ser lidos.")
+    if "erro" in errors:
+        frequencies = errors["erro"].fillna("Erro não informado").value_counts()
+        most_common_error = str(frequencies.index[0])
+        st.sidebar.caption(
+            f"Causa mais frequente ({int(frequencies.iloc[0])} arquivo(s)): "
+            f"{most_common_error}"
+        )
     with st.sidebar.expander("Ver erros de extração"):
-        st.dataframe(errors, hide_index=True, width="stretch")
+        ordered_columns = [column for column in ("erro", "arquivo") if column in errors]
+        st.dataframe(
+            errors[ordered_columns],
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "erro": st.column_config.TextColumn("Erro completo", width="large"),
+                "arquivo": st.column_config.TextColumn("Arquivo", width="medium"),
+            },
+        )
+        st.download_button(
+            "Baixar diagnóstico (.csv)",
+            errors.to_csv(index=False).encode("utf-8"),
+            file_name="erros_extracao_dai.csv",
+            mime="text/csv",
+        )
 
 
 def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
@@ -206,6 +239,14 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
         return works, catalog, samples, "Dados sintéticos de demonstração"
 
     if mode == "Repositório Hugging Face":
+        if st.sidebar.button(
+            "Atualizar e reprocessar dados",
+            help="Limpa o snapshot e os resultados de importação mantidos em cache.",
+        ):
+            cached_hf_snapshot.clear()
+            cached_local_data.clear()
+            cached_restore_hf_model_names.clear()
+            st.rerun()
         try:
             with st.spinner("Baixando e preparando os arquivos do Hugging Face..."):
                 snapshot_dir = Path(
@@ -246,6 +287,7 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
                 dai_paths_to_load,
                 str(catalog_path or missing_csv),
                 str(samples_path or missing_csv),
+                EXPECTED_DAI_EXTRACTOR_VERSION,
             )
 
             name_repairs = pd.DataFrame()
@@ -254,6 +296,7 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
                     catalog,
                     samples,
                     tuple(str(path) for path in dai_paths),
+                    EXPECTED_DAI_EXTRACTOR_VERSION,
                 )
 
             opaque_names = (
@@ -318,6 +361,7 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
             selected_local_dais,
             str(local_catalog),
             str(local_samples),
+            EXPECTED_DAI_EXTRACTOR_VERSION,
         )
         show_extraction_errors(errors)
         return (
@@ -360,7 +404,9 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
             )
             st.stop()
         sources = tuple((uploaded.name, uploaded.getvalue()) for uploaded in dai_files)
-        catalog, samples, errors = cached_uploaded_dais(sources)
+        catalog, samples, errors = cached_uploaded_dais(
+            sources, EXPECTED_DAI_EXTRACTOR_VERSION
+        )
         show_extraction_errors(errors)
         if catalog.empty:
             st.error("Nenhum arquivo `.DAI` pôde ser processado; consulte os erros de extração.")
@@ -1023,6 +1069,16 @@ def main() -> None:
         f"{'✅' if not catalog.empty else '—'} modelos `.DAI`/catálogo · "
         f"{'✅' if not samples.empty else '—'} amostra espacial"
     )
+    if not catalog.empty:
+        valid_model_dates = (
+            int(pd.to_datetime(catalog["data_final"], errors="coerce").notna().sum())
+            if "data_final" in catalog
+            else 0
+        )
+        st.sidebar.caption(
+            "Datas dos modelos: "
+            f"{valid_model_dates}/{len(catalog)} com data final verificável."
+        )
     if not works.empty and not catalog.empty:
         work_names = set(works["modelo_nome"].dropna().astype(str).str.casefold())
         catalog_names = set(catalog["modelo_nome"].dropna().astype(str).str.casefold())

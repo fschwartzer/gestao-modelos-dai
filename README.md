@@ -113,6 +113,12 @@ ou de um alias inequívoco dentro da própria amostra do modelo. Métricas usam 
 de `diagnosticos.gerais` ou `modelo.metrics`. Se a evidência não existir no pacote, o valor permanece
 ausente e a regra de completude/temporalidade conservadora é mantida.
 
+O pipeline de extração possui versão própria na chave do cache. Assim, uma atualização de `src/dai.py`
+invalida resultados antigos mesmo quando o processo do Streamlit permanece ativo. No modo Hugging
+Face, o botão **Atualizar e reprocessar dados** também limpa explicitamente o snapshot e os resultados
+derivados. A barra lateral informa quantos modelos possuem data final verificável e mostra a causa
+mais frequente quando algum `.dai` não puder ser lido.
+
 ### Revisões dos modelos
 
 Quando modelos compartilham a mesma base numérica, a letra final representa a revisão. A maior

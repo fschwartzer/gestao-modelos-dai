@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 
+DAI_EXTRACTOR_VERSION = "3.1"
 SHA256_IDENTIFIER_PATTERN = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 
 
