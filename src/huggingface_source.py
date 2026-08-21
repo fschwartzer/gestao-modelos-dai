@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
-
 
 DOWNLOAD_PATTERNS = [
     "*.sqlite",
@@ -29,6 +27,10 @@ def download_hf_snapshot(
     revision: str,
     token: str | None,
 ) -> Path:
+    # Importação tardia: os modos demonstração/upload continuam funcionando
+    # mesmo quando a dependência opcional ainda não foi instalada no ambiente.
+    from huggingface_hub import snapshot_download
+
     snapshot_path = snapshot_download(
         repo_id=repo_id,
         repo_type="dataset",

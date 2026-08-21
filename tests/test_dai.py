@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import joblib
 import pandas as pd
 import pytest
 
-from src.dai import extract_dai_bytes, extract_many_dai_bytes
+from src.dai import (
+    extract_dai_bytes,
+    extract_dai_path,
+    extract_many_dai_bytes,
+    restore_model_names_from_artifacts,
+    sha256_bytes,
+)
 
 
 def synthetic_dai_bytes() -> bytes:
@@ -82,3 +89,85 @@ def test_dai_batch_rejects_duplicate_canonical_model_names() -> None:
     assert len(catalog) == 1
     assert len(samples) == 3
     assert "duplicado" in errors.iloc[0]["erro"]
+
+
+def test_dai_path_preserves_logical_name_when_resolved_path_is_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blob_path = tmp_path / ("a" * 64)
+    blob_path.write_bytes(synthetic_dai_bytes())
+    logical_path = tmp_path / "snapshot" / "MOD_V_TER_Z1_001.dai"
+    original_resolve = Path.resolve
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        if path == logical_path:
+            return blob_path
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    record, samples = extract_dai_path(logical_path, trust_source=True)
+
+    assert record["modelo_nome"] == "MOD_V_TER_Z1_001"
+    assert record["arquivo"] == "MOD_V_TER_Z1_001.dai"
+    assert {sample["modelo_nome"] for sample in samples} == {"MOD_V_TER_Z1_001"}
+
+
+def test_preextracted_hash_names_are_restored_without_deserializing(
+    tmp_path: Path,
+) -> None:
+    raw = synthetic_dai_bytes()
+    artifact_path = tmp_path / "MOD_V_TER_Z1_001.dai"
+    artifact_path.write_bytes(raw)
+    digest = sha256_bytes(raw)
+    catalog = pd.DataFrame(
+        {
+            "modelo_nome": [digest],
+            "arquivo": [digest],
+            "artifact_sha256": [digest],
+        }
+    )
+    samples = pd.DataFrame(
+        {"modelo_nome": [digest], "latitude": [-30.03], "longitude": [-51.20]}
+    )
+
+    repaired_catalog, repaired_samples, audit = restore_model_names_from_artifacts(
+        catalog, samples, (artifact_path,)
+    )
+
+    assert repaired_catalog.iloc[0]["modelo_nome"] == "MOD_V_TER_Z1_001"
+    assert repaired_catalog.iloc[0]["arquivo"] == "MOD_V_TER_Z1_001.dai"
+    assert repaired_samples.iloc[0]["modelo_nome"] == "MOD_V_TER_Z1_001"
+    assert len(audit) == 1
+
+
+def test_dai_infers_period_and_uses_equivalent_model_metrics() -> None:
+    model_frame = pd.DataFrame(
+        {
+            "DATA": ["01/02/2025", "15/03/2025"],
+            "LATITUDE": [-30.03, -30.04],
+            "LONGITUDE": [-51.20, -51.19],
+            "VALOR": [100.0, 110.0],
+        }
+    )
+    package = {
+        "dados": {"df": model_frame, "df_completo": model_frame},
+        "transformacoes": {
+            "X": model_frame[["VALOR"]],
+            "y": model_frame["VALOR"],
+        },
+        "periodo_dados_mercado": {"coluna_data": "DATA"},
+        "modelo": {"metrics": {"rsquared": 0.92, "rsquared_adj": 0.88, "mse_resid": 9.0}},
+    }
+    buffer = io.BytesIO()
+    joblib.dump(package, buffer)
+
+    record, samples = extract_dai_bytes(
+        buffer.getvalue(), "MOD_V_TER_Z1_002.dai", trust_source=True
+    )
+
+    assert record["data_inicial"] == pd.Timestamp("2025-02-01")
+    assert record["data_final"] == pd.Timestamp("2025-03-15")
+    assert record["r2_ajustado"] == 0.88
+    assert record["desvio_padrao_residuos"] == 3.0
+    assert record["variavel_alvo"] == "VALOR"
+    assert [sample["data_ref"] for sample in samples] == ["2025-02-01", "2025-03-15"]

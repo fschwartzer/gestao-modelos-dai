@@ -49,7 +49,12 @@ from src.charts import (
     horizontal_bar,
     priority_map,
 )
-from src.dai import extract_dai_path, extract_many_dai_bytes
+from src.dai import (
+    extract_dai_path,
+    extract_many_dai_bytes,
+    is_sha256_identifier,
+    restore_model_names_from_artifacts,
+)
 from src.data import (
     analysis_availability,
     load_csv_source,
@@ -92,6 +97,23 @@ def cached_uploaded_dais(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     catalog, samples, errors = extract_many_dai_bytes(sources, trust_source=True)
     return standardize_catalog(catalog), standardize_samples(samples), errors
+
+
+@st.cache_data(show_spinner=False)
+def cached_restore_hf_model_names(
+    catalog: pd.DataFrame,
+    samples: pd.DataFrame,
+    dai_paths: tuple[str, ...],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    repaired_catalog, repaired_samples, audit = restore_model_names_from_artifacts(
+        catalog, samples, dai_paths
+    )
+    return (
+        standardize_catalog(repaired_catalog),
+        standardize_samples(repaired_samples),
+        audit,
+    )
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_hf_snapshot(repo_id: str, revision: str) -> str:
@@ -226,6 +248,26 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
                 str(samples_path or missing_csv),
             )
 
+            name_repairs = pd.DataFrame()
+            if has_extracted_catalog and dai_paths:
+                catalog, samples, name_repairs = cached_restore_hf_model_names(
+                    catalog,
+                    samples,
+                    tuple(str(path) for path in dai_paths),
+                )
+
+            opaque_names = (
+                catalog["modelo_nome"].map(is_sha256_identifier)
+                if "modelo_nome" in catalog
+                else pd.Series(dtype=bool)
+            )
+            if opaque_names.any():
+                st.sidebar.warning(
+                    f"{int(opaque_names.sum())} modelo(s) ainda possuem identificador "
+                    "opaco. O arquivo .DAI correspondente não foi localizado de forma "
+                    "não ambígua pelo hash de conteúdo."
+                )
+
             show_extraction_errors(errors)
 
             if works.empty and catalog.empty:
@@ -248,7 +290,8 @@ def load_selected_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]
                 "Hugging Face · "
                 f"SQLite: {'sim' if not works.empty else 'não'} · "
                 f"modelos: {len(catalog)} · "
-                f"origem: {model_source}",
+                f"origem: {model_source} · "
+                f"nomes restaurados: {len(name_repairs)}",
             )
 
         except Exception as error:
@@ -980,6 +1023,20 @@ def main() -> None:
         f"{'✅' if not catalog.empty else '—'} modelos `.DAI`/catálogo · "
         f"{'✅' if not samples.empty else '—'} amostra espacial"
     )
+    if not works.empty and not catalog.empty:
+        work_names = set(works["modelo_nome"].dropna().astype(str).str.casefold())
+        catalog_names = set(catalog["modelo_nome"].dropna().astype(str).str.casefold())
+        matched_names = work_names & catalog_names
+        st.sidebar.caption(
+            "Compatibilidade SQLite ↔ catálogo: "
+            f"{len(matched_names)}/{len(catalog_names)} modelo(s) do catálogo "
+            "possuem uso histórico correspondente."
+        )
+        if not matched_names:
+            st.sidebar.warning(
+                "Nenhum nome de modelo do catálogo coincide com o SQLite. "
+                "Cobertura e prioridades não devem ser interpretadas até revisar a origem."
+            )
     consolidated = revision_audit[revision_audit["n_versoes"] > 1]
     if not consolidated.empty:
         st.sidebar.caption(

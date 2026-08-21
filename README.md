@@ -96,6 +96,23 @@ As fontes são independentes e as páginas são habilitadas somente quando seus 
 Assim, é possível trabalhar somente com SQLite ou somente com `.DAI`; as análises incompatíveis
 ficam fora da navegação e a barra lateral informa quais fontes estão disponíveis.
 
+### Contrato comum das fontes
+
+Todos os modos convertem os arquivos para os mesmos três conjuntos internos: trabalhos do SQLite,
+catálogo de modelos e amostra espacial. O identificador do modelo é sempre derivado do nome lógico
+do arquivo `.dai`, inclusive quando o Hugging Face o armazena como link para um blob identificado
+por SHA-256.
+
+Catálogos pré-extraídos por versões antigas podem conter esse SHA no lugar do nome. Quando os `.dai`
+correspondentes também estão no snapshot, a aplicação recupera o nome pela correspondência auditável
+entre `artifact_sha256` e o arquivo lógico, sem desserializar novamente o pickle. Correspondências
+ausentes ou ambíguas permanecem sinalizadas; não são corrigidas por aproximação.
+
+Datas inicial e final ausentes no bloco de período são inferidas somente da coluna de data declarada
+ou de um alias inequívoco dentro da própria amostra do modelo. Métricas usam os campos equivalentes
+de `diagnosticos.gerais` ou `modelo.metrics`. Se a evidência não existir no pacote, o valor permanece
+ausente e a regra de completude/temporalidade conservadora é mantida.
+
 ### Revisões dos modelos
 
 Quando modelos compartilham a mesma base numérica, a letra final representa a revisão. A maior
